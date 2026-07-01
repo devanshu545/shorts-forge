@@ -1,8 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText } from "ai";
+import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway.server";
+
 
 const InputSchema = z.object({
   niche: z.string().min(2).max(200),
@@ -37,8 +39,14 @@ function extractJson(text: string): unknown {
   const first = candidate.indexOf("{");
   const last = candidate.lastIndexOf("}");
   if (first === -1 || last === -1) throw new Error("Model did not return JSON");
-  return JSON.parse(candidate.slice(first, last + 1));
+  const raw = candidate.slice(first, last + 1);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return JSON.parse(jsonrepair(raw));
+  }
 }
+
 
 export const generateScript = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

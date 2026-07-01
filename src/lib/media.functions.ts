@@ -2,9 +2,11 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { experimental_generateVideo as generateVideo, generateImage, generateText } from "ai";
 import { createGateway } from "@ai-sdk/gateway";
+import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway.server";
 import type { GeneratedScript } from "./scripts.functions";
+
 
 const SceneSchema = z.object({
   order: z.number(),
@@ -63,8 +65,14 @@ function extractJson(text: string): unknown {
   const first = candidate.indexOf("{");
   const last = candidate.lastIndexOf("}");
   if (first === -1 || last === -1) throw new Error("Model did not return JSON");
-  return JSON.parse(candidate.slice(first, last + 1));
+  const raw = candidate.slice(first, last + 1);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return JSON.parse(jsonrepair(raw));
+  }
 }
+
 
 function compactScript(script: GeneratedScript) {
   return [
