@@ -2,9 +2,11 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { experimental_generateVideo as generateVideo, generateImage, generateText } from "ai";
 import { createGateway } from "@ai-sdk/gateway";
+import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway.server";
 import type { GeneratedScript } from "./scripts.functions";
+
 
 const SceneSchema = z.object({
   order: z.number(),
