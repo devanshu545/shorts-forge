@@ -83,7 +83,7 @@ export const saveScriptAsDraft = createServerFn({ method: "POST" })
       .insert({
         user_id: context.userId,
         title: data.script.title,
-        script: data.script as unknown as Record<string, unknown>,
+        script: JSON.parse(JSON.stringify(data.script)),
         description: data.script.description,
         hashtags: data.script.hashtags,
         seo_keywords: data.script.seoKeywords,
