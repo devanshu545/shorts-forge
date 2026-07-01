@@ -35,6 +35,8 @@ const MetadataSchema = z.object({
 
 type Metadata = z.infer<typeof MetadataSchema>;
 
+type SupabaseAdmin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
+
 const StartVideoInput = z.object({
   script: ScriptSchema,
   durationSeconds: z.number().int().min(4).max(90),
@@ -100,6 +102,40 @@ function createVideoGateway() {
         }
       : undefined,
   });
+}
+
+export const ScheduledScriptInput = z.object({
+  niche: z.string().min(2).max(300),
+  tone: z.string().min(2).max(80).default("energetic and punchy"),
+  hookStyle: z.string().min(2).max(80).default("shocking statistic"),
+  durationSeconds: z.number().int().min(15).max(90).default(45),
+});
+
+export async function generateScriptWithGemini(input: z.infer<typeof ScheduledScriptInput>): Promise<GeneratedScript> {
+  const key = process.env.LOVABLE_API_KEY;
+  if (!key) throw new Error("LOVABLE_API_KEY not configured");
+  const provider = createLovableAiGatewayProvider(key);
+  const model = provider("google/gemini-2.5-flash");
+  const sceneCount = Math.max(3, Math.round(input.durationSeconds / 6));
+  const { text } = await generateText({
+    model,
+    system: `You write viral YouTube Shorts scripts optimised for retention. Return ONLY a JSON object (no markdown) matching:
+{
+  "title": string,
+  "hook": string,
+  "scenes": [{"order": number, "visualPrompt": string, "voiceover": string, "onScreenText": string, "durationSeconds": number}],
+  "fullVoiceover": string,
+  "description": string,
+  "hashtags": string[],
+  "seoKeywords": string[]
+}`,
+    prompt: `Niche: ${input.niche}
+Tone: ${input.tone}
+Hook style: ${input.hookStyle}
+Target duration: ${input.durationSeconds} seconds
+Create exactly ${sceneCount} scenes whose durations sum to roughly ${input.durationSeconds} seconds.`,
+  });
+  return ScriptSchema.parse(extractJson(text)) as GeneratedScript;
 }
 
 async function generateMetadataWithGemini(input: { topic?: string; script?: GeneratedScript; fileName?: string }): Promise<Metadata> {
@@ -193,116 +229,168 @@ export const generateMetadataForVideo = createServerFn({ method: "POST" })
     return { metadata, thumbnailError: "error" in thumbnail ? thumbnail.error : null };
   });
 
+async function runVideoGenerationForUser(args: {
+  supabaseAdmin: SupabaseAdmin;
+  userId: string;
+  script: GeneratedScript;
+  durationSeconds: number;
+  existingVideoId?: string;
+  scheduledFor?: string | null;
+  generationJobId?: string | null;
+}) {
+  const { supabaseAdmin, userId, script } = args;
+  const metadata = await generateMetadataWithGemini({ script });
+
+  let videoId = args.existingVideoId;
+  if (!videoId) {
+    const { data: row, error } = await supabaseAdmin
+      .from("videos")
+      .insert({
+        user_id: userId,
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+        hashtags: metadata.hashtags,
+        seo_keywords: metadata.keywords,
+        metadata_options: { titleOptions: metadata.titleOptions },
+        script: JSON.parse(JSON.stringify(script)),
+        duration_seconds: args.durationSeconds,
+        status: "generating_video",
+        generation_progress: 5,
+        generation_stage: "Initializing Veo 3.1 engine...",
+        scheduled_for: args.scheduledFor,
+        generation_job_id: args.generationJobId,
+      } as never)
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    videoId = row.id;
+  } else {
+    const { error } = await supabaseAdmin
+      .from("videos")
+      .update({
+        status: "generating_video",
+        generation_progress: 5,
+        generation_stage: "Initializing Veo 3.1 engine...",
+        error_message: null,
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+        hashtags: metadata.hashtags,
+        seo_keywords: metadata.keywords,
+        metadata_options: { titleOptions: metadata.titleOptions },
+        script: JSON.parse(JSON.stringify(script)),
+        duration_seconds: args.durationSeconds,
+        scheduled_for: args.scheduledFor ?? undefined,
+        generation_job_id: args.generationJobId ?? undefined,
+      } as never)
+      .eq("id", videoId)
+      .eq("user_id", userId);
+    if (error) throw new Error(error.message);
+  }
+
+  const updateStage = async (generation_progress: number, generation_stage: string) => {
+    await supabaseAdmin.from("videos").update({ generation_progress, generation_stage } as never).eq("id", videoId!).eq("user_id", userId);
+  };
+
+  try {
+    const thumbnail = await maybeGenerateThumbnail(userId, videoId, metadata);
+    await supabaseAdmin
+      .from("videos")
+      .update({
+        thumbnail_url: thumbnail.signedUrl,
+        thumbnail_storage_path: thumbnail.path,
+        metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
+      } as never)
+      .eq("id", videoId)
+      .eq("user_id", userId);
+
+    await updateStage(18, `Generating scene 1 of ${script.scenes.length}...`);
+    const gateway = createVideoGateway();
+    const veoDuration = Math.min(8, Math.max(4, Math.round(args.durationSeconds / Math.max(script.scenes.length, 1))));
+    const prompt = `Vertical YouTube Short, cinematic, 9:16, complete story in one clip. Use this script as creative direction, include synchronized natural audio/ambience and voiceover style pacing. Avoid subtitles unless specified.
+
+${compactScript(script)}`;
+    await updateStage(45, "Rendering frames...");
+    const result = await generateVideo({
+      model: gateway.videoModel("google/veo-3.1-generate-001"),
+      prompt,
+      aspectRatio: "9:16",
+      resolution: "1080x1920",
+      duration: veoDuration,
+      generateAudio: true,
+      maxRetries: 0,
+    });
+    await updateStage(75, "Adding audio track...");
+    const video = result.video;
+    if (!video?.uint8Array?.length) throw new Error("Veo returned no video bytes");
+    await updateStage(88, "Encoding final video...");
+    const stored = await uploadBytes("videos", `${userId}/${videoId}.mp4`, video.uint8Array, video.mediaType || "video/mp4");
+    const { error: updErr } = await supabaseAdmin
+      .from("videos")
+      .update({
+        status: "ready",
+        generation_progress: 100,
+        generation_stage: "Video ready! 🎉",
+        video_url: stored.signedUrl,
+        video_storage_path: stored.path,
+        file_size_bytes: video.uint8Array.byteLength,
+        duration_seconds: veoDuration,
+        error_message: null,
+      } as never)
+      .eq("id", videoId)
+      .eq("user_id", userId);
+    if (updErr) throw new Error(updErr.message);
+    return { videoId, metadata, videoUrl: stored.signedUrl, warning: veoDuration < args.durationSeconds ? `Veo generated an ${veoDuration}s clip because this Gateway route does not accept ${args.durationSeconds}s in one request. The app stores the exact provider output instead of faking length.` : null };
+  } catch (err) {
+    const reason = providerErrorMessage(err);
+    await supabaseAdmin
+      .from("videos")
+      .update({ status: "failed", generation_progress: 0, generation_stage: "Video generation failed", error_message: reason } as never)
+      .eq("id", videoId)
+      .eq("user_id", userId);
+    throw new Error(`Video generation failed: ${reason}`);
+  }
+}
+
+export async function generateScheduledVideoForUser(args: {
+  userId: string;
+  niche: string;
+  tone: string;
+  hookStyle: string;
+  durationSeconds: number;
+  scheduledFor?: string | null;
+  generationJobId?: string | null;
+}) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const script = await generateScriptWithGemini({
+    niche: args.niche,
+    tone: args.tone,
+    hookStyle: args.hookStyle,
+    durationSeconds: args.durationSeconds,
+  });
+  return runVideoGenerationForUser({
+    supabaseAdmin,
+    userId: args.userId,
+    script,
+    durationSeconds: args.durationSeconds,
+    scheduledFor: args.scheduledFor,
+    generationJobId: args.generationJobId,
+  });
+}
+
 export const startVideoGeneration = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => StartVideoInput.parse(raw))
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const script = data.script as GeneratedScript;
-    const metadata = await generateMetadataWithGemini({ script });
-
-    let videoId = data.existingVideoId;
-    if (!videoId) {
-      const { data: row, error } = await supabaseAdmin
-        .from("videos")
-        .insert({
-          user_id: context.userId,
-          title: metadata.title,
-          description: metadata.description,
-          tags: metadata.tags,
-          hashtags: metadata.hashtags,
-          seo_keywords: metadata.keywords,
-          metadata_options: { titleOptions: metadata.titleOptions },
-          script: JSON.parse(JSON.stringify(script)),
-          duration_seconds: data.durationSeconds,
-          status: "generating_video",
-          generation_progress: 5,
-          generation_stage: "Initializing Veo 3.1 engine...",
-        } as never)
-        .select("id")
-        .single();
-      if (error) throw new Error(error.message);
-      videoId = row.id;
-    } else {
-      const { error } = await supabaseAdmin
-        .from("videos")
-        .update({
-          status: "generating_video",
-          generation_progress: 5,
-          generation_stage: "Initializing Veo 3.1 engine...",
-          error_message: null,
-          title: metadata.title,
-          description: metadata.description,
-          tags: metadata.tags,
-          hashtags: metadata.hashtags,
-          seo_keywords: metadata.keywords,
-          metadata_options: { titleOptions: metadata.titleOptions },
-        } as never)
-        .eq("id", videoId)
-        .eq("user_id", context.userId);
-      if (error) throw new Error(error.message);
-    }
-
-    const updateStage = async (generation_progress: number, generation_stage: string) => {
-      await supabaseAdmin.from("videos").update({ generation_progress, generation_stage } as never).eq("id", videoId!).eq("user_id", context.userId);
-    };
-
-    try {
-      const thumbnail = await maybeGenerateThumbnail(context.userId, videoId, metadata);
-      await supabaseAdmin
-        .from("videos")
-        .update({
-          thumbnail_url: thumbnail.signedUrl,
-          thumbnail_storage_path: thumbnail.path,
-          metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
-        } as never)
-        .eq("id", videoId)
-        .eq("user_id", context.userId);
-
-      await updateStage(18, `Generating scene 1 of ${script.scenes.length}...`);
-      const gateway = createVideoGateway();
-      const veoDuration = Math.min(8, Math.max(4, Math.round(data.durationSeconds / Math.max(script.scenes.length, 1))));
-      const prompt = `Vertical YouTube Short, cinematic, 9:16, complete story in one clip. Use this script as creative direction, include synchronized natural audio/ambience and voiceover style pacing. Avoid subtitles unless specified.\n\n${compactScript(script)}`;
-      await updateStage(45, "Rendering frames...");
-      const result = await generateVideo({
-        model: gateway.videoModel("google/veo-3.1-generate-001"),
-        prompt,
-        aspectRatio: "9:16",
-        resolution: "1080x1920",
-        duration: veoDuration,
-        generateAudio: true,
-        maxRetries: 0,
-      });
-      await updateStage(75, "Adding audio track...");
-      const video = result.video;
-      if (!video?.uint8Array?.length) throw new Error("Veo returned no video bytes");
-      await updateStage(88, "Encoding final video...");
-      const stored = await uploadBytes("videos", `${context.userId}/${videoId}.mp4`, video.uint8Array, video.mediaType || "video/mp4");
-      const { error: updErr } = await supabaseAdmin
-        .from("videos")
-        .update({
-          status: "ready",
-          generation_progress: 100,
-          generation_stage: "Video ready! 🎉",
-          video_url: stored.signedUrl,
-          video_storage_path: stored.path,
-          file_size_bytes: video.uint8Array.byteLength,
-          duration_seconds: veoDuration,
-          error_message: null,
-        } as never)
-        .eq("id", videoId)
-        .eq("user_id", context.userId);
-      if (updErr) throw new Error(updErr.message);
-      return { videoId, metadata, videoUrl: stored.signedUrl, warning: veoDuration < data.durationSeconds ? `Veo generated an ${veoDuration}s clip because this provider route does not accept ${data.durationSeconds}s in one request.` : null };
-    } catch (err) {
-      const reason = providerErrorMessage(err);
-      await supabaseAdmin
-        .from("videos")
-        .update({ status: "failed", generation_progress: 0, generation_stage: "Video generation failed", error_message: reason } as never)
-        .eq("id", videoId)
-        .eq("user_id", context.userId);
-      throw new Error(`Video generation failed: ${reason}`);
-    }
+    return runVideoGenerationForUser({
+      supabaseAdmin,
+      userId: context.userId,
+      script: data.script as GeneratedScript,
+      durationSeconds: data.durationSeconds,
+      existingVideoId: data.existingVideoId,
+    });
   });
 
 async function getFreshAccessToken(userId: string) {
