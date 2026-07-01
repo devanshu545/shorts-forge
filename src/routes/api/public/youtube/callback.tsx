@@ -45,19 +45,19 @@ async function handleCallback(request: Request): Promise<Response> {
   const tok = await tokRes.json();
   if (!tokRes.ok) {
     console.error("Token exchange failed:", tok);
-    const msg = tok.error_description || tok.error || "token_exchange_failed";
+    const msg = `Google token exchange failed ${tokRes.status}: ${tok.error_description || tok.error || JSON.stringify(tok)}`;
     throw redirect({ to: "/channel", search: { error: msg } as never });
   }
 
   // Fetch channel info
   const chRes = await fetch(
-    "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,status,brandingSettings&mine=true",
     { headers: { Authorization: `Bearer ${tok.access_token}` } },
   );
   const chJson = await chRes.json();
   if (!chRes.ok) {
     console.error("Channel fetch failed:", chJson);
-    const msg = chJson.error?.message || "channel_fetch_failed";
+    const msg = `YouTube channel fetch failed ${chRes.status}: ${chJson.error?.message || JSON.stringify(chJson.error || chJson)}`;
     throw redirect({ to: "/channel", search: { error: msg } as never });
   }
   
@@ -78,7 +78,14 @@ async function handleCallback(request: Request): Promise<Response> {
       scope: tok.scope,
       channel_id: channel.id,
       channel_title: channel.snippet?.title ?? null,
-      channel_thumbnail: channel.snippet?.thumbnails?.default?.url ?? null,
+      channel_thumbnail: channel.snippet?.thumbnails?.high?.url || channel.snippet?.thumbnails?.default?.url || null,
+      channel_description: channel.snippet?.description ?? null,
+      channel_banner: channel.brandingSettings?.image?.bannerExternalUrl ?? null,
+      channel_created_at: channel.snippet?.publishedAt ?? null,
+      country: channel.snippet?.country ?? null,
+      made_for_kids: channel.status?.madeForKids ?? null,
+      statistics: channel.statistics ?? {},
+      analytics: {},
     },
     { onConflict: "user_id" },
   );
