@@ -14,16 +14,267 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      analytics_snapshots: {
+        Row: {
+          id: string
+          metrics: Json
+          snapshot_at: string
+          source: string
+          user_id: string
+          video_id: string | null
+        }
+        Insert: {
+          id?: string
+          metrics: Json
+          snapshot_at?: string
+          source?: string
+          user_id: string
+          video_id?: string | null
+        }
+        Update: {
+          id?: string
+          metrics?: Json
+          snapshot_at?: string
+          source?: string
+          user_id?: string
+          video_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "analytics_snapshots_video_id_fkey"
+            columns: ["video_id"]
+            isOneToOne: false
+            referencedRelation: "videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          email: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      scheduled_jobs: {
+        Row: {
+          active: boolean
+          auto_upload: boolean
+          cadence: Database["public"]["Enums"]["cadence"]
+          created_at: string
+          duration_seconds: number
+          hook_style: string | null
+          id: string
+          last_run_at: string | null
+          name: string
+          next_run_at: string
+          niche: string
+          tone: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          active?: boolean
+          auto_upload?: boolean
+          cadence?: Database["public"]["Enums"]["cadence"]
+          created_at?: string
+          duration_seconds?: number
+          hook_style?: string | null
+          id?: string
+          last_run_at?: string | null
+          name: string
+          next_run_at: string
+          niche: string
+          tone?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          active?: boolean
+          auto_upload?: boolean
+          cadence?: Database["public"]["Enums"]["cadence"]
+          created_at?: string
+          duration_seconds?: number
+          hook_style?: string | null
+          id?: string
+          last_run_at?: string | null
+          name?: string
+          next_run_at?: string
+          niche?: string
+          tone?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      videos: {
+        Row: {
+          audio_url: string | null
+          created_at: string
+          description: string | null
+          duration_seconds: number | null
+          error_message: string | null
+          file_size_bytes: number | null
+          hashtags: string[] | null
+          id: string
+          scheduled_for: string | null
+          script: Json | null
+          seo_keywords: string[] | null
+          status: Database["public"]["Enums"]["video_status"]
+          thumbnail_url: string | null
+          title: string
+          updated_at: string
+          user_id: string
+          video_url: string | null
+          youtube_video_id: string | null
+        }
+        Insert: {
+          audio_url?: string | null
+          created_at?: string
+          description?: string | null
+          duration_seconds?: number | null
+          error_message?: string | null
+          file_size_bytes?: number | null
+          hashtags?: string[] | null
+          id?: string
+          scheduled_for?: string | null
+          script?: Json | null
+          seo_keywords?: string[] | null
+          status?: Database["public"]["Enums"]["video_status"]
+          thumbnail_url?: string | null
+          title?: string
+          updated_at?: string
+          user_id: string
+          video_url?: string | null
+          youtube_video_id?: string | null
+        }
+        Update: {
+          audio_url?: string | null
+          created_at?: string
+          description?: string | null
+          duration_seconds?: number | null
+          error_message?: string | null
+          file_size_bytes?: number | null
+          hashtags?: string[] | null
+          id?: string
+          scheduled_for?: string | null
+          script?: Json | null
+          seo_keywords?: string[] | null
+          status?: Database["public"]["Enums"]["video_status"]
+          thumbnail_url?: string | null
+          title?: string
+          updated_at?: string
+          user_id?: string
+          video_url?: string | null
+          youtube_video_id?: string | null
+        }
+        Relationships: []
+      }
+      youtube_connections: {
+        Row: {
+          access_token: string
+          channel_id: string | null
+          channel_thumbnail: string | null
+          channel_title: string | null
+          connected_at: string
+          refresh_token: string
+          scope: string | null
+          token_expires_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          access_token: string
+          channel_id?: string | null
+          channel_thumbnail?: string | null
+          channel_title?: string | null
+          connected_at?: string
+          refresh_token: string
+          scope?: string | null
+          token_expires_at: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          access_token?: string
+          channel_id?: string | null
+          channel_thumbnail?: string | null
+          channel_title?: string | null
+          connected_at?: string
+          refresh_token?: string
+          scope?: string | null
+          token_expires_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
-      [_ in never]: never
+      youtube_channel_info: {
+        Row: {
+          channel_id: string | null
+          channel_thumbnail: string | null
+          channel_title: string | null
+          connected_at: string | null
+          scope: string | null
+          user_id: string | null
+        }
+        Insert: {
+          channel_id?: string | null
+          channel_thumbnail?: string | null
+          channel_title?: string | null
+          connected_at?: string | null
+          scope?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          channel_id?: string | null
+          channel_thumbnail?: string | null
+          channel_title?: string | null
+          connected_at?: string | null
+          scope?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      cadence: "once" | "daily" | "weekly"
+      video_status:
+        | "draft"
+        | "queued"
+        | "scripting"
+        | "generating_video"
+        | "generating_audio"
+        | "uploading"
+        | "ready"
+        | "failed"
+        | "scheduled"
+        | "published"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +401,20 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      cadence: ["once", "daily", "weekly"],
+      video_status: [
+        "draft",
+        "queued",
+        "scripting",
+        "generating_video",
+        "generating_audio",
+        "uploading",
+        "ready",
+        "failed",
+        "scheduled",
+        "published",
+      ],
+    },
   },
 } as const
