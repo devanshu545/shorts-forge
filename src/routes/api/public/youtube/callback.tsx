@@ -5,9 +5,11 @@ async function handleCallback(request: Request): Promise<Response> {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const error = url.searchParams.get("error");
+  const error_description = url.searchParams.get("error_description");
 
   if (error) {
-    throw redirect({ to: "/channel", search: { error } as never });
+    console.error("OAuth error from Google:", error, error_description);
+    throw redirect({ to: "/channel", search: { error: error_description || error } as never });
   }
   if (!code || !state) {
     throw redirect({ to: "/channel", search: { error: "missing_code" } as never });
@@ -42,20 +44,28 @@ async function handleCallback(request: Request): Promise<Response> {
   });
   const tok = await tokRes.json();
   if (!tokRes.ok) {
-    console.error("Token exchange failed", tok);
-    throw redirect({ to: "/channel", search: { error: "token_exchange" } as never });
+    console.error("Token exchange failed:", tok);
+    const msg = `Google token exchange failed ${tokRes.status}: ${tok.error_description || tok.error || JSON.stringify(tok)}`;
+    throw redirect({ to: "/channel", search: { error: msg } as never });
   }
 
   // Fetch channel info
   const chRes = await fetch(
-    "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,status,brandingSettings&mine=true",
     { headers: { Authorization: `Bearer ${tok.access_token}` } },
   );
   const chJson = await chRes.json();
-  if (!chRes.ok || !chJson.items?.length) {
-    console.error("Channel fetch failed", chJson);
-    throw redirect({ to: "/channel", search: { error: "no_channel" } as never });
+  if (!chRes.ok) {
+    console.error("Channel fetch failed:", chJson);
+    const msg = `YouTube channel fetch failed ${chRes.status}: ${chJson.error?.message || JSON.stringify(chJson.error || chJson)}`;
+    throw redirect({ to: "/channel", search: { error: msg } as never });
   }
+  
+  if (!chJson.items?.length) {
+    console.error("No YouTube channel found for this account");
+    throw redirect({ to: "/channel", search: { error: "no_youtube_channel_found" } as never });
+  }
+  
   const channel = chJson.items[0];
 
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -68,13 +78,20 @@ async function handleCallback(request: Request): Promise<Response> {
       scope: tok.scope,
       channel_id: channel.id,
       channel_title: channel.snippet?.title ?? null,
-      channel_thumbnail: channel.snippet?.thumbnails?.default?.url ?? null,
+      channel_thumbnail: channel.snippet?.thumbnails?.high?.url || channel.snippet?.thumbnails?.default?.url || null,
+      channel_description: channel.snippet?.description ?? null,
+      channel_banner: channel.brandingSettings?.image?.bannerExternalUrl ?? null,
+      channel_created_at: channel.snippet?.publishedAt ?? null,
+      country: channel.snippet?.country ?? null,
+      made_for_kids: channel.status?.madeForKids ?? null,
+      statistics: channel.statistics ?? {},
+      analytics: {},
     },
     { onConflict: "user_id" },
   );
   if (dbErr) {
-    console.error("DB upsert failed", dbErr);
-    throw redirect({ to: "/channel", search: { error: "db_error" } as never });
+    console.error("DB upsert failed:", dbErr);
+    throw redirect({ to: "/channel", search: { error: "database_error" } as never });
   }
 
   throw redirect({ to: "/channel", search: { connected: "1" } as never });

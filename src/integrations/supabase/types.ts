@@ -49,6 +49,33 @@ export type Database = {
           },
         ]
       }
+      notifications: {
+        Row: {
+          created_at: string
+          id: string
+          message: string
+          read: boolean
+          title: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          message: string
+          read?: boolean
+          title: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          message?: string
+          read?: boolean
+          title?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -135,16 +162,24 @@ export type Database = {
           duration_seconds: number | null
           error_message: string | null
           file_size_bytes: number | null
+          generation_job_id: string | null
+          generation_progress: number
+          generation_stage: string | null
           hashtags: string[] | null
           id: string
+          metadata_options: Json
           scheduled_for: string | null
           script: Json | null
           seo_keywords: string[] | null
           status: Database["public"]["Enums"]["video_status"]
+          tags: string[]
+          thumbnail_storage_path: string | null
           thumbnail_url: string | null
           title: string
           updated_at: string
+          uploaded_at: string | null
           user_id: string
+          video_storage_path: string | null
           video_url: string | null
           youtube_video_id: string | null
         }
@@ -155,16 +190,24 @@ export type Database = {
           duration_seconds?: number | null
           error_message?: string | null
           file_size_bytes?: number | null
+          generation_job_id?: string | null
+          generation_progress?: number
+          generation_stage?: string | null
           hashtags?: string[] | null
           id?: string
+          metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
           seo_keywords?: string[] | null
           status?: Database["public"]["Enums"]["video_status"]
+          tags?: string[]
+          thumbnail_storage_path?: string | null
           thumbnail_url?: string | null
           title?: string
           updated_at?: string
+          uploaded_at?: string | null
           user_id: string
+          video_storage_path?: string | null
           video_url?: string | null
           youtube_video_id?: string | null
         }
@@ -175,16 +218,24 @@ export type Database = {
           duration_seconds?: number | null
           error_message?: string | null
           file_size_bytes?: number | null
+          generation_job_id?: string | null
+          generation_progress?: number
+          generation_stage?: string | null
           hashtags?: string[] | null
           id?: string
+          metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
           seo_keywords?: string[] | null
           status?: Database["public"]["Enums"]["video_status"]
+          tags?: string[]
+          thumbnail_storage_path?: string | null
           thumbnail_url?: string | null
           title?: string
           updated_at?: string
+          uploaded_at?: string | null
           user_id?: string
+          video_storage_path?: string | null
           video_url?: string | null
           youtube_video_id?: string | null
         }
@@ -193,36 +244,57 @@ export type Database = {
       youtube_connections: {
         Row: {
           access_token: string
+          analytics: Json
+          channel_banner: string | null
+          channel_created_at: string | null
+          channel_description: string | null
           channel_id: string | null
           channel_thumbnail: string | null
           channel_title: string | null
           connected_at: string
+          country: string | null
+          made_for_kids: boolean | null
           refresh_token: string
           scope: string | null
+          statistics: Json
           token_expires_at: string
           updated_at: string
           user_id: string
         }
         Insert: {
           access_token: string
+          analytics?: Json
+          channel_banner?: string | null
+          channel_created_at?: string | null
+          channel_description?: string | null
           channel_id?: string | null
           channel_thumbnail?: string | null
           channel_title?: string | null
           connected_at?: string
+          country?: string | null
+          made_for_kids?: boolean | null
           refresh_token: string
           scope?: string | null
+          statistics?: Json
           token_expires_at: string
           updated_at?: string
           user_id: string
         }
         Update: {
           access_token?: string
+          analytics?: Json
+          channel_banner?: string | null
+          channel_created_at?: string | null
+          channel_description?: string | null
           channel_id?: string | null
           channel_thumbnail?: string | null
           channel_title?: string | null
           connected_at?: string
+          country?: string | null
+          made_for_kids?: boolean | null
           refresh_token?: string
           scope?: string | null
+          statistics?: Json
           token_expires_at?: string
           updated_at?: string
           user_id?: string
