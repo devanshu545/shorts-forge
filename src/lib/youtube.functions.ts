@@ -5,6 +5,7 @@ import { getRequestHeader } from "@tanstack/react-start/server";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/youtube.upload",
   "https://www.googleapis.com/auth/yt-analytics.readonly",
 ].join(" ");
 
@@ -22,7 +23,7 @@ export const getYouTubeAuthUrl = createServerFn({ method: "POST" })
     if (!clientId) throw new Error("GOOGLE_OAUTH_CLIENT_ID not configured");
 
     const redirectUri = `${getOrigin()}/api/public/youtube/callback`;
-    const state = `${context.userId}.${crypto.randomUUID()}`;
+    const state = `${context.userId}.${Math.random().toString(36).substring(2)}`;
 
     const params = new URLSearchParams({
       client_id: clientId,
@@ -46,7 +47,7 @@ export const getYouTubeConnection = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const { data, error } = await context.supabase
       .from("youtube_connections")
-      .select("channel_id, channel_title, channel_thumbnail, connected_at, scope")
+      .select("channel_id, channel_title, channel_thumbnail, channel_description, channel_banner, channel_created_at, country, made_for_kids, connected_at, scope, statistics, analytics")
       .eq("user_id", context.userId)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -71,13 +72,14 @@ export const refreshChannelStats = createServerFn({ method: "POST" })
   .handler(async ({ context }) => {
     const { data: conn } = await context.supabase
       .from("youtube_connections")
-      .select("access_token, refresh_token, token_expires_at, channel_id")
+      .select("access_token, refresh_token, token_expires_at, channel_id, scope")
       .eq("user_id", context.userId)
       .maybeSingle();
     if (!conn) throw new Error("No YouTube channel connected");
 
     let accessToken = conn.access_token;
-    if (new Date(conn.token_expires_at).getTime() - Date.now() < 60_000) {
+    // Refresh token if expiring in less than 5 minutes
+    if (new Date(conn.token_expires_at).getTime() - Date.now() < 300_000) {
       const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID!;
       const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET!;
       const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -91,7 +93,7 @@ export const refreshChannelStats = createServerFn({ method: "POST" })
         }),
       });
       const tok = await res.json();
-      if (!res.ok) throw new Error(tok.error_description ?? "Token refresh failed");
+      if (!res.ok) throw new Error(`Token refresh failed: ${tok.error_description || tok.error || "Unknown error"}`);
       accessToken = tok.access_token;
       await context.supabase
         .from("youtube_connections")
@@ -102,20 +104,107 @@ export const refreshChannelStats = createServerFn({ method: "POST" })
         .eq("user_id", context.userId);
     }
 
+    // 1. Fetch lifetime/channel details from YouTube Data API
     const chRes = await fetch(
-      `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${conn.channel_id}`,
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,status,brandingSettings&id=${conn.channel_id}`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     const chJson = await chRes.json();
-    if (!chRes.ok) throw new Error(chJson.error?.message ?? "YouTube API error");
-    const stats = chJson.items?.[0]?.statistics;
-    if (!stats) throw new Error("No stats returned");
+    if (!chRes.ok) {
+      throw new Error(`YouTube Data API Error ${chRes.status}: ${chJson.error?.message || JSON.stringify(chJson.error || chJson)}`);
+    }
+    const channel = chJson.items?.[0];
+    const lifetimeStats = channel?.statistics;
+    if (!lifetimeStats) throw new Error("No lifetime stats returned from YouTube");
+
+    // 2. Fetch recent analytics (last 30 days) from YouTube Analytics API
+    const endDate = new Date().toISOString().split("T")[0];
+    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    
+    const analyticsUrl = `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel==MINE&startDate=${startDate}&endDate=${endDate}&metrics=views,comments,likes,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost`;
+    const analyticsRes = await fetch(
+      analyticsUrl,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    
+    const analyticsJson = await analyticsRes.json();
+    let analyticsData: Record<string, unknown> | null = null;
+    
+    if (analyticsRes.ok && analyticsJson.rows?.[0]) {
+      // Map columns to values
+      const mappedAnalytics: Record<string, unknown> = {};
+      analyticsJson.columnHeaders.forEach((header: any, index: number) => {
+        mappedAnalytics[header.name] = analyticsJson.rows[0][index];
+      });
+      analyticsData = mappedAnalytics;
+    } else if (!analyticsRes.ok) {
+      analyticsData = {
+        error: `YouTube Analytics API Error ${analyticsRes.status}: ${analyticsJson.error?.message || JSON.stringify(analyticsJson.error || analyticsJson)}`,
+      };
+    }
+
+    const topVideosRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${encodeURIComponent(conn.channel_id!)}&maxResults=10&order=viewCount&type=video`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    const topVideosJson = await topVideosRes.json();
+    let topVideos: unknown[] = [];
+    if (topVideosRes.ok && topVideosJson.items?.length) {
+      const ids = topVideosJson.items.map((item: any) => item.id?.videoId).filter(Boolean).join(",");
+      if (ids) {
+        const detailRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${ids}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const detailJson = await detailRes.json();
+        if (detailRes.ok) {
+          topVideos = (detailJson.items || []).map((item: any) => ({
+            id: item.id,
+            title: item.snippet?.title,
+            views: item.statistics?.viewCount,
+            likes: item.statistics?.likeCount,
+            comments: item.statistics?.commentCount,
+          }));
+        }
+      }
+    }
+
+    const channelAgeMs = channel.snippet?.publishedAt ? Date.now() - new Date(channel.snippet.publishedAt).getTime() : null;
+    const channelAgeMonths = channelAgeMs ? Math.floor(channelAgeMs / (1000 * 60 * 60 * 24 * 30.4375)) : null;
+
+    const metrics = {
+      ...lifetimeStats,
+      channelTitle: channel.snippet?.title,
+      channelDescription: channel.snippet?.description,
+      thumbnail: channel.snippet?.thumbnails?.high?.url || channel.snippet?.thumbnails?.default?.url,
+      banner: channel.brandingSettings?.image?.bannerExternalUrl,
+      publishedAt: channel.snippet?.publishedAt,
+      country: channel.snippet?.country,
+      madeForKids: channel.status?.madeForKids,
+      channelAgeMonths,
+      watchHours28Days: analyticsData?.estimatedMinutesWatched ? Number(analyticsData.estimatedMinutesWatched) / 60 : null,
+      topVideos,
+      analyticsError: analyticsData?.error,
+      recent: analyticsData,
+      fetched_at: new Date().toISOString()
+    };
+
+    await context.supabase.from("youtube_connections").update({
+      channel_title: channel.snippet?.title ?? null,
+      channel_thumbnail: channel.snippet?.thumbnails?.high?.url || channel.snippet?.thumbnails?.default?.url || null,
+      channel_description: channel.snippet?.description ?? null,
+      channel_banner: channel.brandingSettings?.image?.bannerExternalUrl ?? null,
+      channel_created_at: channel.snippet?.publishedAt ?? null,
+      country: channel.snippet?.country ?? null,
+      made_for_kids: channel.status?.madeForKids ?? null,
+      statistics: lifetimeStats,
+      analytics: metrics,
+    }).eq("user_id", context.userId);
 
     await context.supabase.from("analytics_snapshots").insert({
       user_id: context.userId,
       source: "youtube",
-      metrics: stats,
+      metrics: metrics,
     });
 
-    return { stats };
+    return { stats: metrics };
   });

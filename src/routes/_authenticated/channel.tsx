@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Youtube, RefreshCw, Unlink, Loader2 } from "lucide-react";
+import { Youtube, RefreshCw, Unlink, Loader2, Info } from "lucide-react";
 import { toast } from "sonner";
 import {
   getYouTubeAuthUrl,
@@ -12,6 +12,12 @@ import {
   disconnectYouTube,
   refreshChannelStats,
 } from "@/lib/youtube.functions";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type ChannelSearch = { connected?: string; error?: string };
 
@@ -37,11 +43,16 @@ function ChannelPage() {
     queryFn: () => getConn(),
   });
 
-  const [stats, setStats] = useState<Record<string, string> | null>(null);
+  const [stats, setStats] = useState<any | null>(null);
 
   useEffect(() => {
     if (search.connected) toast.success("YouTube channel connected!");
-    if (search.error) toast.error(`Connection failed: ${search.error}`);
+    if (search.error) {
+      toast.error(`Connection failed: ${search.error}`, {
+        description: "Please ensure the YouTube Analytics API is enabled in your Google Cloud project and you have granted all requested permissions.",
+        duration: 8000,
+      });
+    }
   }, [search.connected, search.error]);
 
   const refreshMut = useMutation({
@@ -50,7 +61,12 @@ function ChannelPage() {
       setStats(r.stats);
       toast.success("Stats refreshed");
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      console.error("Refresh error:", e);
+      toast.error("Failed to refresh stats", {
+        description: e.message,
+      });
+    },
   });
 
   const disconnectMut = useMutation({
@@ -88,7 +104,7 @@ function ChannelPage() {
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
         ) : conn ? (
-          <div className="space-y-6">
+          <div className="space-y-8">
             <div className="flex items-center gap-4">
               {conn.channel_thumbnail && (
                 <img
@@ -131,10 +147,48 @@ function ChannelPage() {
             </div>
 
             {stats && (
-              <div className="grid grid-cols-3 gap-4">
-                <StatTile label="Subscribers" value={stats.subscriberCount} />
-                <StatTile label="Total views" value={stats.viewCount} />
-                <StatTile label="Videos" value={stats.videoCount} />
+              <div className="space-y-6">
+                <div>
+                  <h3 className="mb-4 flex items-center gap-2 font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                    Lifetime Statistics
+                  </h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <StatTile label="Subscribers" value={stats.subscriberCount} />
+                    <StatTile label="Total views" value={stats.viewCount} />
+                    <StatTile label="Videos" value={stats.videoCount} />
+                  </div>
+                </div>
+
+                {stats.recent && (
+                  <div>
+                    <h3 className="mb-4 flex items-center gap-2 font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                      Last 30 Days
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-4 w-4" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Real-time analytics from YouTube Analytics API</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </h3>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <StatTile label="Views" value={stats.recent.views} />
+                      <StatTile label="Subs Gained" value={stats.recent.subscribersGained} color="text-green-500" />
+                      <StatTile label="Watch Time (min)" value={stats.recent.estimatedMinutesWatched} />
+                      <StatTile label="Avg Duration (sec)" value={stats.recent.averageViewDuration} />
+                    </div>
+                  </div>
+                )}
+                
+                {!stats.recent && !refreshMut.isPending && (
+                  <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-4 text-sm text-yellow-600 dark:text-yellow-500">
+                    <p className="font-semibold">Recent analytics unavailable</p>
+                    <p>Make sure the YouTube Analytics API is enabled in your Google Cloud Console.</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -162,14 +216,14 @@ function ChannelPage() {
   );
 }
 
-function StatTile({ label, value }: { label: string; value?: string }) {
+function StatTile({ label, value, color }: { label: string; value?: string | number; color?: string }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-background/40 p-4">
+    <div className="rounded-lg border border-border/60 bg-background/40 p-4 transition-colors hover:border-border">
       <p className="text-xs uppercase tracking-wide text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1 font-display text-2xl font-semibold">
-        {value ? Number(value).toLocaleString() : "—"}
+      <p className={`mt-1 font-display text-2xl font-semibold ${color || ""}`}>
+        {value !== undefined ? Number(value).toLocaleString() : "—"}
       </p>
     </div>
   );
