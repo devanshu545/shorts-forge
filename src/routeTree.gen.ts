@@ -14,6 +14,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedScheduleRouteImport } from './routes/_authenticated/schedule'
+import { Route as AuthenticatedLibraryRouteImport } from './routes/_authenticated/library'
 import { Route as AuthenticatedGenerateRouteImport } from './routes/_authenticated/generate'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedChannelRouteImport } from './routes/_authenticated/channel'
@@ -42,6 +43,11 @@ const AuthenticatedSettingsRoute = AuthenticatedSettingsRouteImport.update({
 const AuthenticatedScheduleRoute = AuthenticatedScheduleRouteImport.update({
   id: '/schedule',
   path: '/schedule',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedLibraryRoute = AuthenticatedLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedGenerateRoute = AuthenticatedGenerateRouteImport.update({
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/generate': typeof AuthenticatedGenerateRoute
+  '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -89,6 +96,7 @@ export interface FileRoutesByTo {
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/generate': typeof AuthenticatedGenerateRoute
+  '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -102,6 +110,7 @@ export interface FileRoutesById {
   '/_authenticated/channel': typeof AuthenticatedChannelRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/generate': typeof AuthenticatedGenerateRoute
+  '/_authenticated/library': typeof AuthenticatedLibraryRoute
   '/_authenticated/schedule': typeof AuthenticatedScheduleRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -115,6 +124,7 @@ export interface FileRouteTypes {
     | '/channel'
     | '/dashboard'
     | '/generate'
+    | '/library'
     | '/schedule'
     | '/settings'
     | '/api/public/scheduler/worker'
@@ -126,6 +136,7 @@ export interface FileRouteTypes {
     | '/channel'
     | '/dashboard'
     | '/generate'
+    | '/library'
     | '/schedule'
     | '/settings'
     | '/api/public/scheduler/worker'
@@ -138,6 +149,7 @@ export interface FileRouteTypes {
     | '/_authenticated/channel'
     | '/_authenticated/dashboard'
     | '/_authenticated/generate'
+    | '/_authenticated/library'
     | '/_authenticated/schedule'
     | '/_authenticated/settings'
     | '/api/public/scheduler/worker'
@@ -189,6 +201,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedScheduleRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/library': {
+      id: '/_authenticated/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof AuthenticatedLibraryRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/generate': {
       id: '/_authenticated/generate'
       path: '/generate'
@@ -231,6 +250,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedChannelRoute: typeof AuthenticatedChannelRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedGenerateRoute: typeof AuthenticatedGenerateRoute
+  AuthenticatedLibraryRoute: typeof AuthenticatedLibraryRoute
   AuthenticatedScheduleRoute: typeof AuthenticatedScheduleRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
 }
@@ -239,6 +259,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedChannelRoute: AuthenticatedChannelRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedGenerateRoute: AuthenticatedGenerateRoute,
+  AuthenticatedLibraryRoute: AuthenticatedLibraryRoute,
   AuthenticatedScheduleRoute: AuthenticatedScheduleRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
 }
