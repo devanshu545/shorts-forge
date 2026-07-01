@@ -2,12 +2,17 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { generateScript, saveScriptAsDraft, type GeneratedScript } from "@/lib/scripts.functions";
+import { startVideoGeneration } from "@/lib/media.functions";
+import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Wand2, Copy, Save, Sparkles } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
+import { Loader2, Wand2, Copy, Save, Sparkles, Download, Youtube } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/generate")({
@@ -18,6 +23,7 @@ function GeneratePage() {
   const navigate = useNavigate();
   const gen = useServerFn(generateScript);
   const save = useServerFn(saveScriptAsDraft);
+  const genVideo = useServerFn(startVideoGeneration);
 
   const [niche, setNiche] = useState("");
   const [tone, setTone] = useState("energetic and punchy");
@@ -26,6 +32,9 @@ function GeneratePage() {
   const [loading, setLoading] = useState(false);
   const [script, setScript] = useState<GeneratedScript | null>(null);
   const [saving, setSaving] = useState(false);
+  const [generatingVideo, setGeneratingVideo] = useState(false);
+  const [videoRow, setVideoRow] = useState<any | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   const run = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,7 +67,34 @@ function GeneratePage() {
 
   const copy = (label: string, text: string) => {
     navigator.clipboard.writeText(text);
-    toast.success(`${label} copied`);
+    toast.success("Copied to clipboard!", { description: label });
+  };
+
+  const copyAll = () => {
+    if (!script) return;
+    copy("All metadata", [`Title: ${script.title}`, `Hook: ${script.hook}`, `Description:\n${script.description}`, `Hashtags: ${script.hashtags.join(" ")}`, `Script:\n${script.fullVoiceover}`].join("\n\n"));
+  };
+
+  const runVideoGeneration = async () => {
+    if (!script) return;
+    setGeneratingVideo(true);
+    setVideoError(null);
+    setVideoRow({ generation_progress: 3, generation_stage: "🔄 Generating video... This may take 2-5 minutes.", title: script.title, script, status: "generating_video" });
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    try {
+      const result = await genVideo({ data: { script, durationSeconds: duration } });
+      const { data: row } = await supabase.from("videos").select("*").eq("id", result.videoId).single();
+      setVideoRow(row || { id: result.videoId, title: result.metadata.title, video_url: result.videoUrl, description: result.metadata.description, tags: result.metadata.tags, hashtags: result.metadata.hashtags, thumbnail_url: null, status: "ready", generation_progress: 100, generation_stage: "Video ready! 🎉" });
+      if (result.warning) toast.warning(result.warning);
+      toast.success("Video ready! 🎉");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Video generation failed";
+      setVideoError(message);
+      toast.error("Video generation failed", { description: message });
+    } finally {
+      if (channel) supabase.removeChannel(channel);
+      setGeneratingVideo(false);
+    }
   };
 
   return (
@@ -127,6 +163,7 @@ function GeneratePage() {
                 <Input value={script.hashtags.join(" ")}
                   onChange={(e) => setScript({ ...script, hashtags: e.target.value.split(/\s+/).filter(Boolean) })} />
               </FieldRow>
+              <Button size="sm" variant="outline" onClick={copyAll}><Copy className="h-3.5 w-3.5" /> Copy All</Button>
             </Card>
 
             <Card className="glass p-6">
@@ -158,10 +195,23 @@ function GeneratePage() {
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 Save to library
               </Button>
-              <Button variant="outline" disabled title="Video generation coming next">
-                Generate video (soon)
+              <Button variant="outline" onClick={runVideoGeneration} disabled={generatingVideo}>
+                {generatingVideo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                Generate video
               </Button>
             </div>
+
+            {(videoRow || videoError) && (
+              <Card className="glass p-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div><h3 className="font-display text-lg font-semibold">Video generation</h3><p className="text-sm text-muted-foreground">{videoRow?.generation_stage || videoError}</p></div>
+                  {videoRow?.status && <Badge>{videoRow.status}</Badge>}
+                </div>
+                {generatingVideo && <div className="space-y-2"><Progress value={videoRow?.generation_progress || 8} /><p className="text-sm">🔄 Generating video... This may take 2-5 minutes.</p></div>}
+                {videoError && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm"><p>{videoError}</p><Button className="mt-3" size="sm" onClick={runVideoGeneration}>Retry</Button></div>}
+                {videoRow?.video_url && <div className="mt-4 grid gap-4 md:grid-cols-[260px_1fr]"><video src={videoRow.video_url} controls className="aspect-[9/16] w-full rounded-xl border border-border object-cover" /><div className="space-y-3"><p className="font-medium">{videoRow.title}</p><p className="whitespace-pre-wrap text-sm text-muted-foreground">{videoRow.description}</p><div className="flex flex-wrap gap-2"><a href={videoRow.video_url} download className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent"><Download className="h-4 w-4" /> Download</a><UploadToYouTubeDialog video={videoRow}><Button><Youtube className="h-4 w-4" />Upload to YouTube</Button></UploadToYouTubeDialog></div></div></div>}
+              </Card>
+            )}
           </>
         )}
       </div>
