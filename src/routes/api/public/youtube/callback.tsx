@@ -69,11 +69,29 @@ async function handleCallback(request: Request): Promise<Response> {
   const channel = chJson.items[0];
 
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data: existing } = await supabaseAdmin
+    .from("youtube_connections")
+    .select("refresh_token")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const refreshToken = tok.refresh_token || existing?.refresh_token;
+  if (!refreshToken) {
+    throw redirect({
+      to: "/channel",
+      search: { error: "Google did not return a refresh token. Disconnect/revoke the app in your Google Account permissions, then connect again and accept all scopes." } as never,
+    });
+  }
+  if (!String(tok.scope || "").includes("youtube.upload")) {
+    throw redirect({
+      to: "/channel",
+      search: { error: "Google connected, but YouTube upload permission was not granted. Connect again and accept all requested YouTube scopes." } as never,
+    });
+  }
   const { error: dbErr } = await supabaseAdmin.from("youtube_connections").upsert(
     {
       user_id: userId,
       access_token: tok.access_token,
-      refresh_token: tok.refresh_token,
+      refresh_token: refreshToken,
       token_expires_at: new Date(Date.now() + tok.expires_in * 1000).toISOString(),
       scope: tok.scope,
       channel_id: channel.id,
