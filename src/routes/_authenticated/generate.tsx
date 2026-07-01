@@ -82,7 +82,15 @@ function GeneratePage() {
     setVideoRow({ generation_progress: 3, generation_stage: "🔄 Generating video... This may take 2-5 minutes.", title: script.title, script, status: "generating_video" });
     let channel: ReturnType<typeof supabase.channel> | null = null;
     try {
-      const result = await genVideo({ data: { script, durationSeconds: duration } });
+      const draft = await save({ data: { script, durationSeconds: duration } });
+      setVideoRow((prev: any) => ({ ...prev, id: draft.id }));
+      channel = supabase
+        .channel(`video-progress-${draft.id}`)
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "videos", filter: `id=eq.${draft.id}` }, (payload) => {
+          setVideoRow(payload.new);
+        })
+        .subscribe();
+      const result = await genVideo({ data: { script, durationSeconds: duration, existingVideoId: draft.id } });
       const { data: row } = await supabase.from("videos").select("*").eq("id", result.videoId).single();
       setVideoRow(row || { id: result.videoId, title: result.metadata.title, video_url: result.videoUrl, description: result.metadata.description, tags: result.metadata.tags, hashtags: result.metadata.hashtags, thumbnail_url: null, status: "ready", generation_progress: 100, generation_stage: "Video ready! 🎉" });
       if (result.warning) toast.warning(result.warning);
