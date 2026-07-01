@@ -1,8 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText } from "ai";
+import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "./ai-gateway.server";
+
 
 const InputSchema = z.object({
   niche: z.string().min(2).max(200),
