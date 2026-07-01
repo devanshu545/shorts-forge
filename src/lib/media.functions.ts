@@ -135,13 +135,12 @@ function extractGoogleError(body: string) {
 }
 
 async function fetchGoogleJson(url: string, apiKey: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("x-goog-api-key", apiKey);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(url, {
     ...init,
-    headers: {
-      "x-goog-api-key": apiKey,
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
+    headers,
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Google Veo request failed (HTTP ${response.status}): ${extractGoogleError(text)}`);
