@@ -400,6 +400,8 @@ async function runVideoGenerationForUser(args: {
   generationJobId?: string | null;
 }) {
   const { supabaseAdmin, userId, script } = args;
+  // No-spend preflight: fail before metadata/thumbnail generation if no real video backend is configured.
+  getVideoBackend();
   const metadata = await generateMetadataWithGemini({ script });
 
   let videoId = args.existingVideoId;
@@ -455,17 +457,6 @@ async function runVideoGenerationForUser(args: {
   };
 
   try {
-    const thumbnail = await maybeGenerateThumbnail(userId, videoId, metadata);
-    await supabaseAdmin
-      .from("videos")
-      .update({
-        thumbnail_url: thumbnail.signedUrl,
-        thumbnail_storage_path: thumbnail.path,
-        metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
-      } as never)
-      .eq("id", videoId)
-      .eq("user_id", userId);
-
     await updateStage(18, `Generating scene 1 of ${script.scenes.length}...`);
     const veoDuration = Math.min(8, Math.max(4, Math.round(args.durationSeconds / Math.max(script.scenes.length, 1))));
     const prompt = `Vertical YouTube Short, cinematic, 9:16, complete story in one clip. Use this script as creative direction, include synchronized natural audio/ambience and voiceover style pacing. Avoid subtitles unless specified.
@@ -479,6 +470,8 @@ ${compactScript(script)}`;
     await updateStage(75, "Adding audio track...");
     await updateStage(88, "Encoding final video...");
     const stored = await uploadBytes("videos", `${userId}/${videoId}.mp4`, video.bytes, video.mediaType || "video/mp4");
+    await updateStage(92, "Creating thumbnail...");
+    const thumbnail = await maybeGenerateThumbnail(userId, videoId, metadata);
     const { error: updErr } = await supabaseAdmin
       .from("videos")
       .update({
@@ -487,9 +480,12 @@ ${compactScript(script)}`;
         generation_stage: "Video ready! 🎉",
         video_url: stored.signedUrl,
         video_storage_path: stored.path,
+        thumbnail_url: thumbnail.signedUrl,
+        thumbnail_storage_path: thumbnail.path,
         file_size_bytes: video.bytes.byteLength,
         duration_seconds: video.durationSeconds,
         error_message: null,
+        metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
       } as never)
       .eq("id", videoId)
       .eq("user_id", userId);
@@ -515,6 +511,8 @@ export async function generateScheduledVideoForUser(args: {
   scheduledFor?: string | null;
   generationJobId?: string | null;
 }) {
+  // No-spend preflight: do not generate a script if the real video backend is not configured.
+  getVideoBackend();
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const script = await generateScriptWithGemini({
     niche: args.niche,
