@@ -1,93 +1,46 @@
+## Goal
+Make video generation complete successfully instead of failing with `Gateway request failed — HTTP 404`, while minimizing paid AI/video retries.
 
-# ShortForge — Revised Build Plan (Supabase via Lovable Cloud)
+## What I found
+- The app is calling the Vercel `@ai-sdk/gateway` video provider with a Lovable API key and a custom base URL: `https://ai.gateway.lovable.dev/v4/ai`.
+- That provider posts to `/video-model`, but the Lovable AI Gateway request is not appearing in Lovable AI Gateway logs and the UI shows `HTTP 404`.
+- This strongly indicates the video call is hitting the wrong gateway route/adapter, not that your prompt/script is bad.
+- Script generation and metadata use the correct Lovable AI Gateway helper path already.
 
-Switching backend from Firebase to Supabase. Good news: **Lovable Cloud IS managed Supabase** — I enable it with one tool call and you get Postgres, Auth, Storage, and Edge Functions with zero config. **No URL or anon key to paste.**
+## Implementation plan
+1. **Replace the broken video adapter**
+   - Remove the `@ai-sdk/gateway` video path from `src/lib/media.functions.ts`.
+   - Route video generation through a working Lovable-compatible video endpoint/tooling path instead of the unsupported `/v4/ai/video-model` URL.
+   - Keep Veo 3.1 as the requested model where supported; if that endpoint returns a provider/model limitation, surface the exact provider message instead of generic failure text.
 
----
+2. **Add a preflight check before spending video credits**
+   - Validate API key availability, model route, duration, aspect ratio, and required input before creating a paid video generation request.
+   - Fail fast with clear instructions if the gateway/model is unavailable, instead of charging/retrying blindly.
 
-## Stack
+3. **Make video generation safer and cheaper**
+   - Use the minimum valid Veo duration for the first successful clip.
+   - Keep `maxRetries: 0` for terminal provider errors.
+   - Do not auto-regenerate after a 400/402/403/404; show the exact cause and stop.
+   - Only retry transient 429/5xx errors with a small backoff if needed.
 
-- **Frontend**: TanStack Start (React 19 + Vite) — current template.
-- **Backend**: Lovable Cloud (managed Supabase) — auth, Postgres, Storage, Edge Functions, cron.
-- **AI (via Lovable AI Gateway, uses your credits)**:
-  - Scripts / SEO / hashtags → `google/gemini-3-flash-preview`
-  - Voiceover → `openai/gpt-4o-mini-tts`
-  - Video → Veo 3.1 (see reality check #2 below)
-- **YouTube**: Your OAuth client → YouTube Data API v3 + YouTube Analytics API.
+4. **Harden the server pipeline**
+   - Ensure video rows always move through clear statuses: generating, ready, or failed.
+   - Preserve the script and metadata even when video generation fails so you do not have to pay for script generation again.
+   - Store the generated MP4 in backend storage and return a signed URL.
 
----
+5. **Improve the UI error and retry behavior**
+   - Replace generic `Invalid error response format` with a readable provider-specific error.
+   - Disable the retry button for non-retryable failures unless the user changes input/settings.
+   - Show a clear next action when credits, OAuth, route, or model access is the blocker.
 
-## Reality checks
+6. **Validate without wasting video credits first**
+   - Run a no-spend/preflight path and check server logs.
+   - Confirm script/metadata persistence still works.
+   - Only run one real minimal video generation attempt after the route is confirmed valid.
+   - Verify the resulting library item has a playable MP4 URL.
 
-1. **You do NOT need to paste a Supabase URL or anon key.** Lovable Cloud provisions and wires everything. If you have a separate self-managed Supabase project you specifically want to use, tell me now; otherwise Cloud is the path.
-2. **Veo 3.1 availability.** Lovable AI Gateway's public model catalog currently lists chat, TTS, embeddings, and image models. Video (Veo) is not in the standard allowlist I can see. I'll wire the video-generation server function against `google/veo-3.1` per your request; if the gateway rejects it, we'll get a clear 400 and I'll surface an error + fallback path (either wait for gateway support or switch to a different provider you approve). I will not silently mock it.
-3. **YouTube OAuth redirect URI.** After enabling Cloud, I'll give you the exact URL (`https://<preview-domain>/api/auth/youtube/callback`) to paste into your Google OAuth client's Authorized Redirect URIs.
-4. **Cost.** Gemini scripts ~$0.001, TTS ~$0.01, Veo (if available) ~$0.30–0.40 per short. Billed to your Lovable workspace credits.
-
----
-
-## Data model (Postgres, RLS on every table, `user_id = auth.uid()`)
-
-- `profiles` — id (=auth.uid), email, display_name, avatar_url, created_at
-- `videos` — id, user_id, title, script (jsonb: scenes/voiceover/captions), video_url, thumbnail_url, audio_url, duration_seconds, file_size_bytes, status (`queued|scripting|generating_video|generating_audio|uploading|ready|failed|scheduled|published`), seo_keywords[], hashtags[], description, error_message, created_at, updated_at
-- `scheduled_jobs` — id, user_id, niche, tone, cadence (`once|daily|weekly`), next_run_at, last_run_at, active, video_defaults jsonb
-- `youtube_connections` — user_id (pk), channel_id, channel_title, access_token (encrypted), refresh_token (encrypted), token_expires_at, connected_at
-- `analytics_snapshots` — id, user_id, video_id (nullable, for channel-wide), source (`youtube`), metrics jsonb, snapshot_at
-
-Storage buckets (private, RLS by user_id folder prefix):
-- `videos/{user_id}/{video_id}.mp4`
-- `thumbnails/{user_id}/{video_id}.jpg`
-- `audio/{user_id}/{video_id}.mp3`
-
----
-
-## Backend surfaces
-
-- **TanStack `createServerFn`** for all app-internal calls: generate script, kick off video job, list library, connect/disconnect YouTube, fetch analytics.
-- **Server routes** (`src/routes/api/…`):
-  - `GET /api/auth/youtube/callback` — OAuth code exchange, store tokens.
-  - `POST /api/public/cron/scheduler` — invoked by Supabase cron.
-- **Supabase Edge Function `scheduler`** (deployed with the project) — runs hourly via `pg_cron`, finds due `scheduled_jobs`, enqueues generation. Works when browser is closed.
-- **Supabase Edge Function `generate-video`** — long-running: calls Veo, downloads MP4, uploads to Storage, updates `videos` row. Client subscribes to that row via realtime for live status.
-
----
-
-## Features & pages
-
-1. **Auth** — Google sign-in (Lovable Cloud managed) + email/password. Auto-creates `profiles` row via trigger.
-2. **Dashboard (`/`)** — real channel stats when YouTube connected (subs, 28-day views, watch hours, top shorts); recent generated shorts; credit-usage note. Clean empty state with "Connect YouTube" CTA if not connected. No mock numbers.
-3. **Generate (`/generate`)** — form (niche, tone, hook style, duration 15/30/60s) → Gemini script (editable: title, hook, scene-by-scene, VO, captions, hashtags, description) → "Generate video" → live status via realtime.
-4. **Library (`/library`)** — Firestore-… sorry, Postgres-backed grid, thumbnails, filters, actions: play, download, copy (title/script/description/hashtags), delete, upload-to-YouTube, manual MP4 drag-drop upload.
-5. **Schedule (`/schedule`)** — create/edit/pause scheduled jobs, next-run time, history.
-6. **Channel (`/channel`)** — deeper YouTube analytics for the connected channel.
-7. **Settings (`/settings`)** — profile, YouTube connect/disconnect, sign out.
-
----
-
-## UI
-
-- Dark theme tokens in `src/styles.css`: bg `#0A0A0F`, primary `#6C63FF`, glass surfaces via layered `oklch` + backdrop-blur.
-- Shadcn Sidebar (left nav, collapsible), glass-morphism cards, grid library, typography pair Space Grotesk display + Inter body.
-
----
-
-## Build order
-
-1. **Enable Lovable Cloud** + create schema migration (all tables, RLS, `has_role` pattern if we add roles later, buckets, storage policies).
-2. **Theme + layout** — dark tokens, sidebar shell, `_authenticated` gate, auth pages (Google + email).
-3. **YouTube OAuth** — callback route, token storage, connect/disconnect UI. Give you the redirect URI to whitelist.
-4. **Script generation** — server fn + Gemini + editable form on `/generate`.
-5. **Video pipeline** — `generate-video` edge function (Veo call, Storage upload), realtime status, TTS voiceover, SRT captions.
-6. **Library** — grid, playback, download, copy actions, manual upload, delete.
-7. **Dashboard + Channel** — real YouTube Data + Analytics API reads.
-8. **Scheduler** — UI + `scheduler` edge function + pg_cron.
-9. **Polish** — empty states, skeletons, 429/402 gateway error surfaces.
-
----
-
-## What I need from you to start
-
-- Confirm using **Lovable Cloud** (managed Supabase). If you insist on a separate self-managed Supabase, say so and I'll wire it instead.
-- Understanding on Veo (reality check #2): proceed and surface a real error if unavailable.
-
-Approve and I'll start with step 1.
+## Technical notes
+- Primary file: `src/lib/media.functions.ts`.
+- UI file: `src/routes/_authenticated/generate.tsx`.
+- I will not create mock videos or fake success states.
+- If Veo 3.1 is not available through the runtime gateway for this project, I will make the app say exactly that and point to the required enablement step, rather than burning more retries.
