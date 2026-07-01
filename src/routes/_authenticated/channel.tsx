@@ -44,7 +44,8 @@ function ChannelPage() {
   });
 
   const [stats, setStats] = useState<any | null>(null);
-  const liveStats = stats || conn?.analytics || conn?.statistics || null;
+  const savedAnalytics = conn?.analytics && typeof conn.analytics === "object" && Object.keys(conn.analytics).length > 0 ? conn.analytics : null;
+  const liveStats = stats || savedAnalytics || conn?.statistics || null;
 
   useEffect(() => {
     if (search.connected) toast.success("YouTube channel connected!");

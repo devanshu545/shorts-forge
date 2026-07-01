@@ -91,25 +91,177 @@ function providerErrorMessage(err: unknown) {
     if (anyErr.statusCode) parts.push(`HTTP ${anyErr.statusCode}`);
     if (anyErr.responseBody) parts.push(anyErr.responseBody.slice(0, 800));
     if (anyErr.data) parts.push(JSON.stringify(anyErr.data).slice(0, 800));
-    return parts.filter(Boolean).join(" — ");
+    const message = parts.filter(Boolean).join(" — ");
+    if (/video-model/i.test(message) && /404/.test(message)) {
+      return "The configured Lovable AI Gateway route does not expose the Vercel video-model endpoint, so the app stopped before wasting another Veo attempt. Add GEMINI_API_KEY/GOOGLE_GENERATIVE_AI_API_KEY for direct Veo 3.1 or AI_GATEWAY_API_KEY for Vercel AI Gateway video generation.";
+    }
+    return message;
   }
   return String(err);
 }
 
-function createVideoGateway() {
-  const apiKey = process.env.AI_GATEWAY_API_KEY || process.env.LOVABLE_API_KEY;
-  if (!apiKey) throw new Error("LOVABLE_API_KEY/AI_GATEWAY_API_KEY is not configured");
-  const usingLovableKey = !process.env.AI_GATEWAY_API_KEY;
+function getGoogleVeoApiKey() {
+  return process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+}
+
+function getVideoBackend() {
+  if (getGoogleVeoApiKey()) return "google-direct" as const;
+  if (process.env.AI_GATEWAY_API_KEY) return "vercel-gateway" as const;
+  throw new Error(
+    "Real Veo video generation is not configured. To avoid wasting Lovable credits, this app will not retry the broken Lovable /video-model route. Add GEMINI_API_KEY (Google AI Studio direct Veo 3.1) or AI_GATEWAY_API_KEY (Vercel AI Gateway) in project secrets, then retry from Library.",
+  );
+}
+
+function createVercelVideoGateway() {
+  const apiKey = process.env.AI_GATEWAY_API_KEY;
+  if (!apiKey) throw new Error("AI_GATEWAY_API_KEY is not configured");
   return createGateway({
     apiKey,
-    baseURL: process.env.AI_GATEWAY_BASE_URL || (usingLovableKey ? "https://ai.gateway.lovable.dev/v4/ai" : undefined),
-    headers: usingLovableKey
-      ? {
-          "Lovable-API-Key": apiKey,
-          "X-Lovable-AIG-SDK": "vercel-ai-sdk",
-        }
-      : undefined,
+    baseURL: process.env.AI_GATEWAY_BASE_URL || undefined,
   });
+}
+
+function toUint8Array(value: ArrayBuffer | Uint8Array) {
+  return value instanceof Uint8Array ? value : new Uint8Array(value);
+}
+
+function extractGoogleError(body: string) {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string; status?: string; code?: number } };
+    return parsed.error?.message || parsed.error?.status || body.slice(0, 800);
+  } catch {
+    return body.slice(0, 800);
+  }
+}
+
+async function fetchGoogleJson(url: string, apiKey: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("x-goog-api-key", apiKey);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Google Veo request failed (HTTP ${response.status}): ${extractGoogleError(text)}`);
+  return text ? JSON.parse(text) : {};
+}
+
+function googleOperationUrl(operationName: string) {
+  if (/^https?:\/\//i.test(operationName)) return operationName;
+  return `https://generativelanguage.googleapis.com/v1beta/${operationName.replace(/^\/+/, "")}`;
+}
+
+function findGoogleVideoPayload(operation: Record<string, any>) {
+  const response = operation.response || {};
+  const samples = response.generateVideoResponse?.generatedSamples || response.generatedSamples || response.generated_videos || response.generatedVideos || [];
+  const first = samples[0]?.video || samples[0];
+  if (!first) return null;
+  return first as { uri?: string; videoUri?: string; fileUri?: string; videoBytes?: string; bytesBase64Encoded?: string; inlineData?: { data?: string; mimeType?: string }; mimeType?: string };
+}
+
+async function generateVideoWithGoogleVeo(args: {
+  prompt: string;
+  durationSeconds: number;
+  onProgress: (progress: number, stage: string) => Promise<void>;
+}) {
+  const apiKey = getGoogleVeoApiKey();
+  if (!apiKey) throw new Error("GEMINI_API_KEY/GOOGLE_GENERATIVE_AI_API_KEY is not configured");
+  const baseUrl = "https://generativelanguage.googleapis.com/v1beta";
+  const clipDuration = Math.min(8, Math.max(4, args.durationSeconds >= 7 ? 8 : args.durationSeconds >= 5 ? 6 : 4));
+  await args.onProgress(42, "Starting direct Veo 3.1 job...");
+  const started = await fetchGoogleJson(`${baseUrl}/models/veo-3.1-generate-preview:predictLongRunning`, apiKey, {
+    method: "POST",
+    body: JSON.stringify({
+      instances: [{ prompt: args.prompt }],
+      parameters: {
+        aspectRatio: "9:16",
+        durationSeconds: clipDuration,
+        numberOfVideos: 1,
+        resolution: clipDuration === 8 ? "1080p" : "720p",
+      },
+    }),
+  });
+  if (!started.name) throw new Error("Google Veo did not return an operation name");
+
+  let operation = started as Record<string, any>;
+  const startedAt = Date.now();
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    if (operation.done) break;
+    await new Promise((resolve) => setTimeout(resolve, 7500));
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    await args.onProgress(Math.min(82, 45 + attempt), `Rendering with Veo 3.1... ${elapsed}s elapsed`);
+    operation = await fetchGoogleJson(googleOperationUrl(started.name), apiKey);
+  }
+
+  if (!operation.done) throw new Error("Google Veo timed out after 6 minutes. The operation may still finish at Google; retry later instead of starting many paid jobs.");
+  if (operation.error) throw new Error(`Google Veo failed: ${operation.error.message || JSON.stringify(operation.error)}`);
+
+  const video = findGoogleVideoPayload(operation);
+  if (!video) throw new Error("Google Veo finished but returned no video payload");
+  const inlineBase64 = video.videoBytes || video.bytesBase64Encoded || video.inlineData?.data;
+  if (inlineBase64) {
+    return {
+      bytes: new Uint8Array(Buffer.from(inlineBase64, "base64")),
+      mediaType: video.mimeType || video.inlineData?.mimeType || "video/mp4",
+      durationSeconds: clipDuration,
+      backend: "google-direct",
+    };
+  }
+  const uri = video.uri || video.videoUri || video.fileUri;
+  if (!uri) throw new Error("Google Veo returned no downloadable video URI");
+  await args.onProgress(84, "Downloading Veo output...");
+  const download = await fetch(uri, { headers: { "x-goog-api-key": apiKey } });
+  if (!download.ok) throw new Error(`Google Veo download failed (HTTP ${download.status})`);
+  return {
+    bytes: toUint8Array(await download.arrayBuffer()),
+    mediaType: download.headers.get("content-type") || "video/mp4",
+    durationSeconds: clipDuration,
+    backend: "google-direct",
+  };
+}
+
+async function generateVideoWithVercelGateway(args: {
+  prompt: string;
+  durationSeconds: number;
+  onProgress: (progress: number, stage: string) => Promise<void>;
+}) {
+  const gateway = createVercelVideoGateway();
+  const clipDuration = 8;
+  await args.onProgress(45, "Rendering frames with Veo 3.1...");
+  const result = await generateVideo({
+    model: gateway.videoModel("google/veo-3.1-generate-001"),
+    prompt: args.prompt,
+    aspectRatio: "9:16",
+    resolution: "1080x1920",
+    duration: clipDuration,
+    generateAudio: true,
+    providerOptions: {
+      vertex: {
+        enhancePrompt: true,
+        pollIntervalMs: 5000,
+        pollTimeoutMs: 600000,
+      },
+    },
+    maxRetries: 0,
+  });
+  const video = result.video;
+  if (!video?.uint8Array?.length) throw new Error("Veo returned no video bytes");
+  return {
+    bytes: video.uint8Array,
+    mediaType: video.mediaType || "video/mp4",
+    durationSeconds: clipDuration,
+    backend: "vercel-gateway",
+  };
+}
+
+async function generateVeoVideo(args: {
+  prompt: string;
+  durationSeconds: number;
+  onProgress: (progress: number, stage: string) => Promise<void>;
+}) {
+  const backend = getVideoBackend();
+  return backend === "google-direct" ? generateVideoWithGoogleVeo(args) : generateVideoWithVercelGateway(args);
 }
 
 export const ScheduledScriptInput = z.object({
@@ -247,6 +399,8 @@ async function runVideoGenerationForUser(args: {
   generationJobId?: string | null;
 }) {
   const { supabaseAdmin, userId, script } = args;
+  // No-spend preflight: fail before metadata/thumbnail generation if no real video backend is configured.
+  getVideoBackend();
   const metadata = await generateMetadataWithGemini({ script });
 
   let videoId = args.existingVideoId;
@@ -302,38 +456,21 @@ async function runVideoGenerationForUser(args: {
   };
 
   try {
-    const thumbnail = await maybeGenerateThumbnail(userId, videoId, metadata);
-    await supabaseAdmin
-      .from("videos")
-      .update({
-        thumbnail_url: thumbnail.signedUrl,
-        thumbnail_storage_path: thumbnail.path,
-        metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
-      } as never)
-      .eq("id", videoId)
-      .eq("user_id", userId);
-
     await updateStage(18, `Generating scene 1 of ${script.scenes.length}...`);
-    const gateway = createVideoGateway();
     const veoDuration = Math.min(8, Math.max(4, Math.round(args.durationSeconds / Math.max(script.scenes.length, 1))));
     const prompt = `Vertical YouTube Short, cinematic, 9:16, complete story in one clip. Use this script as creative direction, include synchronized natural audio/ambience and voiceover style pacing. Avoid subtitles unless specified.
 
 ${compactScript(script)}`;
-    await updateStage(45, "Rendering frames...");
-    const result = await generateVideo({
-      model: gateway.videoModel("google/veo-3.1-generate-001"),
+    const video = await generateVeoVideo({
       prompt,
-      aspectRatio: "9:16",
-      resolution: "1080x1920",
-      duration: veoDuration,
-      generateAudio: true,
-      maxRetries: 0,
+      durationSeconds: veoDuration,
+      onProgress: updateStage,
     });
     await updateStage(75, "Adding audio track...");
-    const video = result.video;
-    if (!video?.uint8Array?.length) throw new Error("Veo returned no video bytes");
     await updateStage(88, "Encoding final video...");
-    const stored = await uploadBytes("videos", `${userId}/${videoId}.mp4`, video.uint8Array, video.mediaType || "video/mp4");
+    const stored = await uploadBytes("videos", `${userId}/${videoId}.mp4`, video.bytes, video.mediaType || "video/mp4");
+    await updateStage(92, "Creating thumbnail...");
+    const thumbnail = await maybeGenerateThumbnail(userId, videoId, metadata);
     const { error: updErr } = await supabaseAdmin
       .from("videos")
       .update({
@@ -342,14 +479,17 @@ ${compactScript(script)}`;
         generation_stage: "Video ready! 🎉",
         video_url: stored.signedUrl,
         video_storage_path: stored.path,
-        file_size_bytes: video.uint8Array.byteLength,
-        duration_seconds: veoDuration,
+        thumbnail_url: thumbnail.signedUrl,
+        thumbnail_storage_path: thumbnail.path,
+        file_size_bytes: video.bytes.byteLength,
+        duration_seconds: video.durationSeconds,
         error_message: null,
+        metadata_options: { titleOptions: metadata.titleOptions, thumbnailError: "error" in thumbnail ? thumbnail.error : null },
       } as never)
       .eq("id", videoId)
       .eq("user_id", userId);
     if (updErr) throw new Error(updErr.message);
-    return { videoId, metadata, videoUrl: stored.signedUrl, warning: veoDuration < args.durationSeconds ? `Veo generated an ${veoDuration}s clip because this Gateway route does not accept ${args.durationSeconds}s in one request. The app stores the exact provider output instead of faking length.` : null };
+    return { videoId, metadata, videoUrl: stored.signedUrl, warning: video.durationSeconds < args.durationSeconds ? `Veo generated an ${video.durationSeconds}s clip because the provider only supports short clips per request. The app stores the exact provider output instead of faking length.` : null };
   } catch (err) {
     const reason = providerErrorMessage(err);
     await supabaseAdmin
@@ -370,6 +510,8 @@ export async function generateScheduledVideoForUser(args: {
   scheduledFor?: string | null;
   generationJobId?: string | null;
 }) {
+  // No-spend preflight: do not generate a script if the real video backend is not configured.
+  getVideoBackend();
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const script = await generateScriptWithGemini({
     niche: args.niche,
