@@ -1,91 +1,93 @@
 
-# ShortForge — Build Plan
+# ShortForge — Revised Build Plan (Supabase via Lovable Cloud)
 
-A YouTube Shorts automation app: script → voiceover → 9:16 AI video → captions → library → scheduled auto-generation → real YouTube channel analytics.
+Switching backend from Firebase to Supabase. Good news: **Lovable Cloud IS managed Supabase** — I enable it with one tool call and you get Postgres, Auth, Storage, and Edge Functions with zero config. **No URL or anon key to paste.**
 
 ---
 
 ## Stack
 
-- **Frontend**: TanStack Start (React 19 + Vite) — the current project template.
-- **Backend for AI/YouTube calls**: TanStack `createServerFn` handlers (keeps API keys server-side, no separate deploy).
-- **Persistence**: Firebase (your choice) — Firestore for metadata, Firebase Storage for MP4/MP3 files, Firebase Auth for user login.
-- **AI**:
-  - Scripts / captions: Lovable AI Gateway → `google/gemini-3-flash-preview`
-  - Video: Lovable AI Gateway → `google/veo-3.1` (or `veo-3.1-fast`)
-  - Voiceover: Lovable AI Gateway TTS
-- **YouTube data**: Your OAuth client → YouTube Data API v3 + YouTube Analytics API.
-- **Scheduling**: Firebase Cloud Functions with Cloud Scheduler (requires Firebase **Blaze** plan — pay-as-you-go, essentially free for personal volume).
+- **Frontend**: TanStack Start (React 19 + Vite) — current template.
+- **Backend**: Lovable Cloud (managed Supabase) — auth, Postgres, Storage, Edge Functions, cron.
+- **AI (via Lovable AI Gateway, uses your credits)**:
+  - Scripts / SEO / hashtags → `google/gemini-3-flash-preview`
+  - Voiceover → `openai/gpt-4o-mini-tts`
+  - Video → Veo 3.1 (see reality check #2 below)
+- **YouTube**: Your OAuth client → YouTube Data API v3 + YouTube Analytics API.
 
 ---
 
-## Reality checks before we start
+## Reality checks
 
-1. **Nothing here is $0.** Veo 3.1 via Lovable AI Gateway is billed from your Lovable workspace credits (~$0.30–0.40 per short clip). Puter.js does not currently expose Veo — that "free Veo" claim isn't real. This is the cheapest legitimate path.
-2. **Firebase Blaze plan required** for Cloud Functions + Scheduler. Free tier can't run server-side cron. If you refuse Blaze, scheduling will not work reliably.
-3. **You'll need to paste** a few things once we start building:
-   - Firebase web config (apiKey, authDomain, projectId, storageBucket, appId) — public, safe to commit
-   - Firebase service account JSON — stored as a secret for server-side Admin SDK
-   - Add redirect URI `https://<your-lovable-domain>/api/auth/youtube/callback` to your Google OAuth client
-4. **Reference video** (the uploaded MP4) sets a visual bar. Veo 3.1 can approach it for short clips but won't perfectly clone its style — I'll tune the prompt template to get close.
+1. **You do NOT need to paste a Supabase URL or anon key.** Lovable Cloud provisions and wires everything. If you have a separate self-managed Supabase project you specifically want to use, tell me now; otherwise Cloud is the path.
+2. **Veo 3.1 availability.** Lovable AI Gateway's public model catalog currently lists chat, TTS, embeddings, and image models. Video (Veo) is not in the standard allowlist I can see. I'll wire the video-generation server function against `google/veo-3.1` per your request; if the gateway rejects it, we'll get a clear 400 and I'll surface an error + fallback path (either wait for gateway support or switch to a different provider you approve). I will not silently mock it.
+3. **YouTube OAuth redirect URI.** After enabling Cloud, I'll give you the exact URL (`https://<preview-domain>/api/auth/youtube/callback`) to paste into your Google OAuth client's Authorized Redirect URIs.
+4. **Cost.** Gemini scripts ~$0.001, TTS ~$0.01, Veo (if available) ~$0.30–0.40 per short. Billed to your Lovable workspace credits.
 
 ---
 
-## Features & scope
+## Data model (Postgres, RLS on every table, `user_id = auth.uid()`)
 
-### 1. Auth
-- Firebase Auth (email + Google sign-in) for app users.
-- Separate "Connect YouTube" flow using your OAuth client with scopes `youtube.readonly` + `yt-analytics.readonly`. Refresh tokens stored encrypted in Firestore.
+- `profiles` — id (=auth.uid), email, display_name, avatar_url, created_at
+- `videos` — id, user_id, title, script (jsonb: scenes/voiceover/captions), video_url, thumbnail_url, audio_url, duration_seconds, file_size_bytes, status (`queued|scripting|generating_video|generating_audio|uploading|ready|failed|scheduled|published`), seo_keywords[], hashtags[], description, error_message, created_at, updated_at
+- `scheduled_jobs` — id, user_id, niche, tone, cadence (`once|daily|weekly`), next_run_at, last_run_at, active, video_defaults jsonb
+- `youtube_connections` — user_id (pk), channel_id, channel_title, access_token (encrypted), refresh_token (encrypted), token_expires_at, connected_at
+- `analytics_snapshots` — id, user_id, video_id (nullable, for channel-wide), source (`youtube`), metrics jsonb, snapshot_at
 
-### 2. Dashboard
-- Real channel stats pulled live from YouTube Data + Analytics API: subscribers, total views, watch hours (last 28 days), top videos.
-- Recent generated shorts, credits/usage this month.
-- Zero mock data. If not connected → clear empty state with "Connect YouTube" CTA.
+Storage buckets (private, RLS by user_id folder prefix):
+- `videos/{user_id}/{video_id}.mp4`
+- `thumbnails/{user_id}/{video_id}.jpg`
+- `audio/{user_id}/{video_id}.mp3`
 
-### 3. Script generation
-- Input: niche, tone, hook style, duration (15/30/60s).
-- Gemini generates: title, hook, script (scene-by-scene), voiceover text, on-screen captions, hashtags.
-- Editable before advancing.
+---
 
-### 4. Video generation
-- Server function calls Veo 3.1 with a scene-composed prompt (9:16, 1080p, duration matched to script).
-- Voiceover generated in parallel via TTS.
-- Final MP4 uploaded to Firebase Storage → permanent public URL saved in Firestore. No blob URLs anywhere.
-- Progress states: queued → generating video → generating audio → uploading → done. Live status via Firestore listener so refresh/tab-switch is safe.
+## Backend surfaces
 
-### 5. Library
-- Grid view reading from Firestore (paginated).
-- Each card: thumbnail, title, duration, created date, status, actions (download, delete, upload to YouTube).
-- Direct upload to connected YouTube channel via YouTube Data API.
+- **TanStack `createServerFn`** for all app-internal calls: generate script, kick off video job, list library, connect/disconnect YouTube, fetch analytics.
+- **Server routes** (`src/routes/api/…`):
+  - `GET /api/auth/youtube/callback` — OAuth code exchange, store tokens.
+  - `POST /api/public/cron/scheduler` — invoked by Supabase cron.
+- **Supabase Edge Function `scheduler`** (deployed with the project) — runs hourly via `pg_cron`, finds due `scheduled_jobs`, enqueues generation. Works when browser is closed.
+- **Supabase Edge Function `generate-video`** — long-running: calls Veo, downloads MP4, uploads to Storage, updates `videos` row. Client subscribes to that row via realtime for live status.
 
-### 6. Scheduler
-- User sets: niche + cadence (daily/weekly) + time.
-- Config stored in Firestore.
-- Firebase Cloud Function runs on Cloud Scheduler cron, triggers the same generation pipeline server-side, notifies user (in-app + optional email).
-- Works whether browser is open or not.
+---
 
-### 7. UI
-- Dark theme: `#0A0A0F` bg, `#6C63FF` primary, glass-morphism cards, left sidebar nav (shadcn Sidebar).
-- Pages: Dashboard, Generate, Library, Scheduler, Channel, Settings.
+## Features & pages
+
+1. **Auth** — Google sign-in (Lovable Cloud managed) + email/password. Auto-creates `profiles` row via trigger.
+2. **Dashboard (`/`)** — real channel stats when YouTube connected (subs, 28-day views, watch hours, top shorts); recent generated shorts; credit-usage note. Clean empty state with "Connect YouTube" CTA if not connected. No mock numbers.
+3. **Generate (`/generate`)** — form (niche, tone, hook style, duration 15/30/60s) → Gemini script (editable: title, hook, scene-by-scene, VO, captions, hashtags, description) → "Generate video" → live status via realtime.
+4. **Library (`/library`)** — Firestore-… sorry, Postgres-backed grid, thumbnails, filters, actions: play, download, copy (title/script/description/hashtags), delete, upload-to-YouTube, manual MP4 drag-drop upload.
+5. **Schedule (`/schedule`)** — create/edit/pause scheduled jobs, next-run time, history.
+6. **Channel (`/channel`)** — deeper YouTube analytics for the connected channel.
+7. **Settings (`/settings`)** — profile, YouTube connect/disconnect, sign out.
+
+---
+
+## UI
+
+- Dark theme tokens in `src/styles.css`: bg `#0A0A0F`, primary `#6C63FF`, glass surfaces via layered `oklch` + backdrop-blur.
+- Shadcn Sidebar (left nav, collapsible), glass-morphism cards, grid library, typography pair Space Grotesk display + Inter body.
 
 ---
 
 ## Build order
 
-1. **Foundation** — Firebase config + secrets, Firebase client/admin wrappers, auth pages, sidebar layout, dark theme tokens.
-2. **YouTube OAuth** — connect flow, token storage, disconnect. Dashboard reads real channel data.
-3. **Script generation** — server fn + Gemini + editable form.
-4. **Video pipeline** — Veo 3.1 server fn, TTS, Firebase Storage upload, live status.
-5. **Library** — Firestore-backed grid, download, delete, YouTube upload.
-6. **Scheduler** — Firestore config UI + Cloud Function (I'll give you `firebase deploy` command; deploy is manual step you run once).
-7. **Polish** — empty states, loading skeletons, error surfaces for 429/402 gateway errors.
+1. **Enable Lovable Cloud** + create schema migration (all tables, RLS, `has_role` pattern if we add roles later, buckets, storage policies).
+2. **Theme + layout** — dark tokens, sidebar shell, `_authenticated` gate, auth pages (Google + email).
+3. **YouTube OAuth** — callback route, token storage, connect/disconnect UI. Give you the redirect URI to whitelist.
+4. **Script generation** — server fn + Gemini + editable form on `/generate`.
+5. **Video pipeline** — `generate-video` edge function (Veo call, Storage upload), realtime status, TTS voiceover, SRT captions.
+6. **Library** — grid, playback, download, copy actions, manual upload, delete.
+7. **Dashboard + Channel** — real YouTube Data + Analytics API reads.
+8. **Scheduler** — UI + `scheduler` edge function + pg_cron.
+9. **Polish** — empty states, skeletons, 429/402 gateway error surfaces.
 
 ---
 
-## What I need from you to start build mode
+## What I need from you to start
 
-- Confirm you'll upgrade Firebase to **Blaze** (required for scheduler). If no, I'll skip step 6 and note it.
-- Confirm you'll paste Firebase web config + service account JSON when prompted.
-- Confirm using existing project name (Firebase project `short-forge-web-776903451241`) is fine.
+- Confirm using **Lovable Cloud** (managed Supabase). If you insist on a separate self-managed Supabase, say so and I'll wire it instead.
+- Understanding on Veo (reality check #2): proceed and surface a real error if unavailable.
 
-Approve this plan and I'll start with Foundation.
+Approve and I'll start with step 1.
