@@ -142,8 +142,47 @@ async function processJob(job) {
 
 async function main() {
   console.log(`Fetching autopilot jobs from ${BASE}...`);
-  console.log(FORCE ? "Manual test mode: creating one job right now." : "Scheduled mode: checking due upload slots.");
-  const endpoint = `${BASE}/api/public/autopilot/tick?limit=${FORCE ? 1 : 5}${FORCE ? "&force=1" : ""}`;
+  if (FORCE) {
+    console.log("Manual test mode: uploading the latest ready Test Flow video. No new generation will run.");
+    const runRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+      body: JSON.stringify({ privacy: "public" }),
+    });
+    const runText = await runRes.text();
+    let runJson;
+    try { runJson = JSON.parse(runText); }
+    catch { throw new Error(`Run workflow returned non-JSON (${runRes.status}): ${runText.slice(0, 1000)}`); }
+    if (!runRes.ok || runJson?.ok === false) {
+      console.error(`Run workflow failed HTTP ${runRes.status}`);
+      console.error(`Response body: ${runText.slice(0, 2000)}`);
+      if (runRes.status === 401) console.error("Fix: GitHub AUTOPILOT_SECRET does not match the app secret.");
+      throw new Error(runJson?.error || `Run workflow failed ${runRes.status}`);
+    }
+    console.log(`✅ Uploaded to YouTube! Video ID: ${runJson.youtubeVideoId}`);
+    console.log(`View on YouTube: ${runJson.youtubeUrl}`);
+    return;
+  }
+
+  console.log("Scheduled mode: checking due upload slots.");
+  try {
+    const retryRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+      body: JSON.stringify({ privacy: "public", onlyAutopilot: true }),
+    });
+    const retryText = await retryRes.text();
+    let retryJson = null;
+    try { retryJson = JSON.parse(retryText); } catch {}
+    if (retryRes.ok && retryJson?.ok) {
+      console.log(`Retried pending autopilot upload: ${retryJson.youtubeUrl}`);
+    } else {
+      console.log(`No pending rendered autopilot upload to retry: ${retryJson?.error || retryText.slice(0, 300)}`);
+    }
+  } catch (retryErr) {
+    console.log("Pending upload retry check failed; continuing to due slot generation:", retryErr instanceof Error ? retryErr.message : retryErr);
+  }
+  const endpoint = `${BASE}/api/public/autopilot/tick?limit=5`;
   const tickRes = await fetch(endpoint, {
     method: "POST",
     headers: { "x-autopilot-secret": SECRET },

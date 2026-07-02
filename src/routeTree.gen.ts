@@ -24,6 +24,7 @@ import { Route as ApiPublicYoutubeCallbackRouteImport } from './routes/api/publi
 import { Route as ApiPublicSchedulerWorkerRouteImport } from './routes/api/public/scheduler/worker'
 import { Route as ApiPublicAutopilotUploadRouteImport } from './routes/api/public/autopilot/upload'
 import { Route as ApiPublicAutopilotTickRouteImport } from './routes/api/public/autopilot/tick'
+import { Route as ApiPublicAutopilotRunWorkflowRouteImport } from './routes/api/public/autopilot/run-workflow'
 
 const UnlockRoute = UnlockRouteImport.update({
   id: '/unlock',
@@ -102,6 +103,12 @@ const ApiPublicAutopilotTickRoute = ApiPublicAutopilotTickRouteImport.update({
   path: '/api/public/autopilot/tick',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicAutopilotRunWorkflowRoute =
+  ApiPublicAutopilotRunWorkflowRouteImport.update({
+    id: '/api/public/autopilot/run-workflow',
+    path: '/api/public/autopilot/run-workflow',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -130,6 +138,7 @@ export interface FileRoutesByTo {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -148,6 +157,7 @@ export interface FileRoutesById {
   '/_authenticated/library': typeof AuthenticatedLibraryRoute
   '/_authenticated/schedule': typeof AuthenticatedScheduleRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
@@ -199,6 +211,7 @@ export interface FileRouteTypes {
     | '/_authenticated/library'
     | '/_authenticated/schedule'
     | '/_authenticated/settings'
+    | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
@@ -210,6 +223,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   UnlockRoute: typeof UnlockRoute
+  ApiPublicAutopilotRunWorkflowRoute: typeof ApiPublicAutopilotRunWorkflowRoute
   ApiPublicAutopilotTickRoute: typeof ApiPublicAutopilotTickRoute
   ApiPublicAutopilotUploadRoute: typeof ApiPublicAutopilotUploadRoute
   ApiPublicSchedulerWorkerRoute: typeof ApiPublicSchedulerWorkerRoute
@@ -323,6 +337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicAutopilotTickRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/autopilot/run-workflow': {
+      id: '/api/public/autopilot/run-workflow'
+      path: '/api/public/autopilot/run-workflow'
+      fullPath: '/api/public/autopilot/run-workflow'
+      preLoaderRoute: typeof ApiPublicAutopilotRunWorkflowRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -354,6 +375,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   UnlockRoute: UnlockRoute,
+  ApiPublicAutopilotRunWorkflowRoute: ApiPublicAutopilotRunWorkflowRoute,
   ApiPublicAutopilotTickRoute: ApiPublicAutopilotTickRoute,
   ApiPublicAutopilotUploadRoute: ApiPublicAutopilotUploadRoute,
   ApiPublicSchedulerWorkerRoute: ApiPublicSchedulerWorkerRoute,
@@ -362,13 +384,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

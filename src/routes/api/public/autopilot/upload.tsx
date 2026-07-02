@@ -12,46 +12,6 @@ type UploadBody = {
   durationSeconds: number;
 };
 
-async function refreshAccessToken(refreshToken: string): Promise<string> {
-  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID!;
-  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET!;
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
-  });
-  const tok = await res.json();
-  if (!res.ok) throw new Error(`Token refresh failed: ${tok.error_description || tok.error || res.status}`);
-  return tok.access_token as string;
-}
-
-async function uploadToYouTube(accessToken: string, mp4: Uint8Array, meta: { title: string; description: string; tags: string[]; privacy: string }): Promise<string> {
-  const metadata = {
-    snippet: { title: meta.title.slice(0, 100), description: meta.description.slice(0, 4900), tags: meta.tags.slice(0, 30), categoryId: "24" },
-    status: { privacyStatus: meta.privacy, selfDeclaredMadeForKids: false },
-  };
-  const boundary = "----ShortForge" + Math.random().toString(36).slice(2);
-  const enc = new TextEncoder();
-  const parts: Uint8Array[] = [
-    enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`),
-    enc.encode(`--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`),
-    mp4,
-    enc.encode(`\r\n--${boundary}--\r\n`),
-  ];
-  const totalLen = parts.reduce((n, p) => n + p.byteLength, 0);
-  const body = new Uint8Array(totalLen);
-  let off = 0;
-  for (const p of parts) { body.set(p, off); off += p.byteLength; }
-  const res = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}`, "Content-Length": String(totalLen) },
-    body,
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`YouTube upload failed (${res.status}): ${json.error?.message || JSON.stringify(json).slice(0, 400)}`);
-  return json.id as string;
-}
-
 async function handler(request: Request): Promise<Response> {
   const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
   const provided = request.headers.get("x-autopilot-secret");
@@ -79,21 +39,6 @@ async function handler(request: Request): Promise<Response> {
       thumbUrl = ts?.signedUrl ?? null;
     }
 
-    // YouTube upload
-    let ytId: string | null = null;
-    let ytError: string | null = null;
-    const { data: conn } = await supabaseAdmin.from("youtube_connections").select("refresh_token").eq("user_id", body.userId).maybeSingle();
-    if (conn?.refresh_token) {
-      try {
-        const accessToken = await refreshAccessToken(conn.refresh_token);
-        ytId = await uploadToYouTube(accessToken, mp4, { title: body.title, description: body.description, tags: body.tags, privacy: body.privacy });
-      } catch (err) {
-        ytError = err instanceof Error ? err.message : String(err);
-      }
-    } else {
-      ytError = "No YouTube connection";
-    }
-
     await supabaseAdmin.from("videos").update({
       status: "ready",
       video_url: signed?.signedUrl ?? null,
@@ -101,12 +46,34 @@ async function handler(request: Request): Promise<Response> {
       file_size_bytes: mp4.byteLength,
       duration_seconds: Math.round(body.durationSeconds),
       generation_progress: 100,
-      generation_stage: ytId ? "Uploaded to YouTube 🎉" : "Rendered (YT upload failed)",
+      generation_stage: "Rendered. Uploading to YouTube...",
       thumbnail_url: thumbUrl,
       thumbnail_storage_path: thumbPath,
-      youtube_video_id: ytId,
-      error_message: ytError,
+      error_message: null,
     } as never).eq("id", body.videoId);
+
+    let ytId: string | null = null;
+    let ytError: string | null = null;
+    try {
+      const { uploadExistingVideoToYouTube } = await import("@/lib/youtube-upload.server");
+      const uploaded = await uploadExistingVideoToYouTube({
+        supabaseAdmin,
+        userId: body.userId,
+        videoId: body.videoId,
+        title: body.title,
+        description: body.description,
+        tags: body.tags,
+        privacyStatus: body.privacy,
+      });
+      ytId = uploaded.youtubeVideoId;
+    } catch (err) {
+      ytError = err instanceof Error ? err.message : String(err);
+      await supabaseAdmin.from("videos").update({
+        status: "ready",
+        generation_stage: "Rendered (YouTube upload failed)",
+        error_message: ytError,
+      } as never).eq("id", body.videoId);
+    }
 
     await supabaseAdmin.from("notifications").insert({
       user_id: body.userId,
