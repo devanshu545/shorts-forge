@@ -488,6 +488,12 @@ function AutopilotPage() {
             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
               <Clock className="h-3.5 w-3.5" /> Next scheduled slots
             </div>
+            {countdown && (
+              <div className="mt-2 rounded-xl border border-primary/30 bg-primary/10 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
+                <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               {health?.upcomingSlots?.length
                 ? health.upcomingSlots.map((iso) => (
@@ -496,6 +502,7 @@ function AutopilotPage() {
                 : <span className="text-xs text-muted-foreground">Turn on Autopilot to see upcoming slots.</span>}
             </div>
           </div>
+
 
           <div className="mt-4">
             <div className="text-xs font-medium text-muted-foreground">Last 5 autopilot runs</div>
