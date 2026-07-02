@@ -14,23 +14,17 @@ if (configuredBase.includes("id-preview--")) {
 const BASE = configuredBase.replace(/\/+$/, "");
 const SECRET = process.env.AUTOPILOT_SECRET;
 const FORCE = process.env.AUTOPILOT_FORCE === "1" || process.argv.includes("--force");
-let githubOidcTokenPromise;
-
 async function getGithubOidcToken() {
-  if (githubOidcTokenPromise) return githubOidcTokenPromise;
-  githubOidcTokenPromise = (async () => {
-    const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-    const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
-    if (!requestUrl || !requestToken) return null;
-    const separator = requestUrl.includes("?") ? "&" : "?";
-    const res = await fetch(`${requestUrl}${separator}audience=shortforge-autopilot`, {
-      headers: { Authorization: `Bearer ${requestToken}` },
-    });
-    if (!res.ok) throw new Error(`GitHub OIDC token request failed: HTTP ${res.status}`);
-    const body = await res.json();
-    return typeof body.value === "string" ? body.value : null;
-  })();
-  return githubOidcTokenPromise;
+  const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!requestUrl || !requestToken) return null;
+  const separator = requestUrl.includes("?") ? "&" : "?";
+  const res = await fetch(`${requestUrl}${separator}audience=shortforge-autopilot`, {
+    headers: { Authorization: `Bearer ${requestToken}` },
+  });
+  if (!res.ok) throw new Error(`GitHub OIDC token request failed: HTTP ${res.status}`);
+  const body = await res.json();
+  return typeof body.value === "string" ? body.value : null;
 }
 
 async function autopilotHeaders(extra = {}) {
