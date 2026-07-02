@@ -50,6 +50,7 @@ function AutopilotPage() {
   const listFn = useServerFn(listAutopilotVideos);
   const pickTopicFn = useServerFn(pickAutopilotTopic);
   const latestTestFn = useServerFn(getLatestAutopilotTestVideo);
+  const healthFn = useServerFn(getAutopilotHealth);
 
   const planFn = useServerFn(planCharacterShort);
   const saveScriptFn = useServerFn(saveScriptAsDraft);
