@@ -133,13 +133,26 @@ async function main() {
     method: "POST",
     headers: { "x-autopilot-secret": SECRET },
   });
-  if (!tickRes.ok) throw new Error(`Tick failed ${tickRes.status}: ${await tickRes.text()}`);
-  const { jobs = [] } = await tickRes.json();
+  const tickText = await tickRes.text();
+  if (!tickRes.ok) {
+    console.error(`Tick failed HTTP ${tickRes.status}`);
+    console.error(`Response body: ${tickText.slice(0, 2000)}`);
+    throw new Error(`Tick failed ${tickRes.status}`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(tickText); }
+  catch { console.error("Tick returned non-JSON:", tickText.slice(0, 500)); throw new Error("Tick non-JSON"); }
+  const jobs = parsed.jobs || [];
   console.log(`Got ${jobs.length} jobs`);
+  if (jobs.length === 0) {
+    console.log("No jobs due right now. This is normal if no autopilot slot matches the current hour.");
+    console.log("To force a test job, click 'Test now' on /autopilot in the app, then re-run this workflow.");
+  }
   for (const job of jobs) {
     try { await processJob(job); }
     catch (err) { console.error(`Job ${job.videoId} failed:`, err); }
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error("FATAL:", e); process.exit(1); });
+

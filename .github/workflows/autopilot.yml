@@ -14,9 +14,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Setup Node
         uses: actions/setup-node@v4
-        with: { node-version: "20" }
+        with: { node-version: "24" }
+      - name: Show config
+        run: |
+          echo "APP_BASE_URL is set: ${{ secrets.APP_BASE_URL != '' }}"
+          echo "AUTOPILOT_SECRET is set: ${{ secrets.AUTOPILOT_SECRET != '' }}"
       - name: Run autopilot
         env:
           AUTOPILOT_SECRET: ${{ secrets.AUTOPILOT_SECRET }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: node scripts/autopilot-runner.mjs
+
