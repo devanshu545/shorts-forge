@@ -49,6 +49,54 @@ export type Database = {
           },
         ]
       }
+      autopilot_settings: {
+        Row: {
+          character_key: string
+          created_at: string
+          enabled: boolean
+          niche: string | null
+          privacy: string
+          slot_hours: number[]
+          timezone: string
+          tone: string
+          topic_mode: string
+          updated_at: string
+          user_id: string
+          videos_per_day: number
+          voice: string
+        }
+        Insert: {
+          character_key?: string
+          created_at?: string
+          enabled?: boolean
+          niche?: string | null
+          privacy?: string
+          slot_hours?: number[]
+          timezone?: string
+          tone?: string
+          topic_mode?: string
+          updated_at?: string
+          user_id: string
+          videos_per_day?: number
+          voice?: string
+        }
+        Update: {
+          character_key?: string
+          created_at?: string
+          enabled?: boolean
+          niche?: string | null
+          privacy?: string
+          slot_hours?: number[]
+          timezone?: string
+          tone?: string
+          topic_mode?: string
+          updated_at?: string
+          user_id?: string
+          videos_per_day?: number
+          voice?: string
+        }
+        Relationships: []
+      }
       notifications: {
         Row: {
           created_at: string
@@ -157,6 +205,7 @@ export type Database = {
       videos: {
         Row: {
           audio_url: string | null
+          autopilot_slot: string | null
           created_at: string
           description: string | null
           duration_seconds: number | null
@@ -185,6 +234,7 @@ export type Database = {
         }
         Insert: {
           audio_url?: string | null
+          autopilot_slot?: string | null
           created_at?: string
           description?: string | null
           duration_seconds?: number | null
@@ -213,6 +263,7 @@ export type Database = {
         }
         Update: {
           audio_url?: string | null
+          autopilot_slot?: string | null
           created_at?: string
           description?: string | null
           duration_seconds?: number | null
