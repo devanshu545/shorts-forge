@@ -117,6 +117,7 @@ async function handler(request: Request): Promise<Response> {
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   const jobs: unknown[] = [];
+  const errors: Array<{ userId: string; message: string }> = [];
   for (const s of users || []) {
     if (jobs.length >= limit) break;
     const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
@@ -196,15 +197,16 @@ async function handler(request: Request): Promise<Response> {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      errors.push({ userId: s.user_id, message: msg.slice(0, 500) });
       await supabaseAdmin.from("notifications").insert({
         user_id: s.user_id,
         title: "Autopilot skipped a slot",
         message: msg.slice(0, 400),
-      } as never);
+      } as never).then(undefined, () => undefined);
     }
   }
 
-  return Response.json({ generatedAt: new Date().toISOString(), jobs });
+  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors });
 }
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({
