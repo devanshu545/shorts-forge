@@ -238,7 +238,7 @@ async function handler(request: Request): Promise<Response> {
       const images: string[] = [];
       for (const sc of plan.scenes) {
         const hint = EMOTION_HINTS[String(sc.emotion).toLowerCase()] ?? "expressive face";
-        const prompt = `${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. ${sc.action}. Scene: ${sc.setting}. ${sc.cameraShot}. Cinematic 3D Pixar-quality, vertical 9:16, soft rim lighting, single subject only, no text, no watermark.`;
+        const prompt = `Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading, subject perfectly centered inside the vertical 9:16 safe area with headroom for captions at the bottom third. Character: ${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. Action: ${sc.action}. Scene: ${sc.setting}. Camera: ${sc.cameraShot}, subtle rim light and soft key light, volumetric atmosphere. Single subject only. Negative: no text, no logos, no watermark, no borders, no letterboxing, no extra characters.`;
         images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137));
         await new Promise((r) => setTimeout(r, 1500));
       }
