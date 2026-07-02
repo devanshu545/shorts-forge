@@ -2,20 +2,14 @@
 // Runs entirely in the browser (heavy stitching happens via MediaRecorder),
 // but talks to the same server fns as the /generate route so both stay in sync.
 
-import {
-  planCharacterShort,
-  generateSceneKeyframe,
-  generateSceneVoiceover,
-  finalizeCharacterShort,
-  failCharacterShort,
-  type CharacterPlan,
-  type VoiceKey,
+import type {
+  CharacterPlan,
+  VoiceKey,
 } from "@/lib/animation/character-short.functions";
-import { saveScriptAsDraft } from "@/lib/scripts.functions";
-import { generateMetadataForVideo } from "@/lib/media.functions";
 import { stitchClips, extForMime } from "@/lib/animation/stitcher";
 import { supabase } from "@/integrations/supabase/client";
 import type { SceneStep } from "@/components/SceneProgress";
+
 
 export type PipelineInput = {
   characterKey: string;
