@@ -136,14 +136,19 @@ async function handler(request: Request): Promise<Response> {
 
   // Preview: what slots are due right now for each enabled user.
   const preview = (users || []).map((s) => {
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
+    const now = new Date();
+    const due = force
+      ? { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() }
+      : isSlotDue(s.slot_hours, (s as any).slot_minutes || [], s.timezone);
     return {
       userId: s.user_id,
       enabled: s.enabled,
       timezone: s.timezone,
       slotHours: s.slot_hours,
-      dueUtcHour: utcHour,
-      isDue: utcHour !== null,
+      slotMinutes: (s as any).slot_minutes || [],
+      dueUtcHour: due?.utcHour ?? null,
+      dueUtcMinute: due?.utcMinute ?? null,
+      isDue: due !== null,
     };
   });
 
@@ -169,8 +174,11 @@ async function handler(request: Request): Promise<Response> {
   const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
   for (const s of users || []) {
     if (jobs.length >= limit) break;
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
-    if (utcHour === null) continue;
+    const now = new Date();
+    const due = force
+      ? { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() }
+      : isSlotDue(s.slot_hours, (s as any).slot_minutes || [], s.timezone);
+    if (!due) continue;
 
     // Preflight: don't burn AI credits if YouTube isn't connected/usable.
     try {
@@ -188,10 +196,10 @@ async function handler(request: Request): Promise<Response> {
       continue;
     }
 
-    const slotKey = currentSlotKey(utcHour);
+    const slotKey = currentSlotKey(due.utcHour, due.utcMinute);
     const slotISO = force
       ? new Date().toISOString()
-      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
+      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11, 13)}:${slotKey.slice(13, 15)}:00Z`).toISOString();
 
 
     if (!force) {
