@@ -387,7 +387,7 @@ function AutopilotPage() {
           <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary-glow" /><h2 className="font-display text-lg font-semibold">Hands-off daily uploads (GitHub worker)</h2></div>
           <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
             <li>1. Connect your GitHub repo to this project (Plus menu → GitHub).</li>
-            <li>2. In GitHub → Settings → Secrets → Actions, add <code className="rounded bg-muted px-1">AUTOPILOT_SECRET</code> and <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL).</li>
+            <li>2. In GitHub → Settings → Secrets → Actions, add only <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL). The workflow now authenticates itself automatically.</li>
             <li>3. For testing: click Test Flow here first, then run the GitHub workflow with <code className="rounded bg-muted px-1">force_test=true</code>. It uploads that ready preview video only.</li>
             <li>4. For automation: turn on Autopilot and hit Apply. The workflow runs hourly and renders + uploads any Shorts whose scheduled slot just passed.</li>
           </ol>
