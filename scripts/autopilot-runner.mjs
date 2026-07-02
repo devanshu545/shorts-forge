@@ -111,10 +111,10 @@ function hookFilter(hookText) {
   const fontfile = FONT_PATH.replace(/:/g, "\\:");
   const txt = escDrawtext((hookText || "").toUpperCase().slice(0, 60));
   return [
-    // dim overlay
-    `drawbox=x=0:y=h*0.18:w=iw:h=h*0.32:color=black@0.55:t=fill:enable='between(t,0,1.4)'`,
-    // headline
-    `drawtext=fontfile='${fontfile}':text='${txt}':fontcolor=yellow:fontsize=110:borderw=8:bordercolor=black:x=(w-text_w)/2:y=h*0.24+(1-min(1,t/0.35))*80:enable='between(t,0,1.4)'`,
+    // dim overlay band
+    `drawbox=x=0:y=h*0.20:w=iw:h=h*0.28:color=black@0.60:t=fill:enable='between(t,0,1.4)'`,
+    // headline (static — no comma in x/y expressions to keep filtergraph parseable)
+    `drawtext=fontfile='${fontfile}':text='${txt}':fontcolor=yellow:fontsize=110:borderw=8:bordercolor=black:x=(w-text_w)/2:y=h*0.28:enable='between(t,0,1.4)'`,
   ].join(",");
 }
 
