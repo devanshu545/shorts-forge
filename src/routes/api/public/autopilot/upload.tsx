@@ -53,9 +53,9 @@ async function uploadToYouTube(accessToken: string, mp4: Uint8Array, meta: { tit
 }
 
 async function handler(request: Request): Promise<Response> {
-  const secret = process.env.AUTOPILOT_SECRET;
+  const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
   const provided = request.headers.get("x-autopilot-secret");
-  if (!secret || provided !== secret) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  if (!provided || !secrets.includes(provided)) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await request.json()) as UploadBody;
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
