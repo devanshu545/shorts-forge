@@ -249,6 +249,26 @@ async function handler(request: Request): Promise<Response> {
       const blendedTone = `${s.tone} | GENRE THIS TIME: ${genre.key.toUpperCase()} — ${genre.brief}. Make the entire story fit this genre.`;
       const plan = await planStory(blendedTone, characterDesc, storyPrompt);
 
+      // Instagram gets its OWN caption/hashtags: longer, storytelling, up to 30 hashtags, with @follow CTA.
+      // Deterministic + cheap: derive from the plan rather than a second LLM call.
+      const igCaption = [
+        (plan.hook || plan.title || "").trim(),
+        "",
+        (plan.description || "").trim(),
+        "",
+        "💛 Save this and follow @craftwebstudioo for a new story every day.",
+        "👇 Which part hit you the hardest? Tell us in the comments.",
+      ].filter(Boolean).join("\n").slice(0, 2000);
+      const igHashtagPool = Array.from(new Set([
+        ...(plan.hashtags || []).map((h) => h.replace(/^#/, "")),
+        "reels", "reelsinstagram", "reelsviral", "reelsindia",
+        "storytime", "animation", "3danimation", "pixarstyle",
+        "shortstory", "viral", "explore", "explorepage",
+        "trending", "trendingreels", "instagood", "instadaily",
+        "cute", "wholesome", "funny", "emotional",
+        "craftwebstudioo", "shorts", "animatedstory", "storiesofinstagram",
+      ])).filter(Boolean).slice(0, 30);
+
       // Reserve slot immediately (so a retry does not double-render)
       const { data: reserved, error: insErr } = await supabaseAdmin
         .from("videos")
@@ -257,6 +277,8 @@ async function handler(request: Request): Promise<Response> {
           title: plan.title,
           description: plan.description,
           hashtags: plan.hashtags,
+          ig_caption: igCaption,
+          ig_hashtags: igHashtagPool,
           status: "generating_video",
           generation_progress: 20,
           generation_stage: "Autopilot: generating assets",
@@ -287,6 +309,9 @@ async function handler(request: Request): Promise<Response> {
         plan,
         rawTopic,
         source,
+        instagramEnabled: Boolean((s as any).instagram_enabled),
+        igCaption,
+        igHashtags: igHashtagPool,
         images, // base64 jpg each
         audios, // base64 mp3 each
       });
