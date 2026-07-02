@@ -25,6 +25,7 @@ import { Route as ApiPublicSchedulerWorkerRouteImport } from './routes/api/publi
 import { Route as ApiPublicAutopilotUploadRouteImport } from './routes/api/public/autopilot/upload'
 import { Route as ApiPublicAutopilotTickRouteImport } from './routes/api/public/autopilot/tick'
 import { Route as ApiPublicAutopilotRunWorkflowRouteImport } from './routes/api/public/autopilot/run-workflow'
+import { Route as ApiPublicAutopilotHeartbeatRouteImport } from './routes/api/public/autopilot/heartbeat'
 
 const UnlockRoute = UnlockRouteImport.update({
   id: '/unlock',
@@ -109,6 +110,12 @@ const ApiPublicAutopilotRunWorkflowRoute =
     path: '/api/public/autopilot/run-workflow',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicAutopilotHeartbeatRoute =
+  ApiPublicAutopilotHeartbeatRouteImport.update({
+    id: '/api/public/autopilot/heartbeat',
+    path: '/api/public/autopilot/heartbeat',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -121,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
@@ -138,6 +146,7 @@ export interface FileRoutesByTo {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
@@ -157,6 +166,7 @@ export interface FileRoutesById {
   '/_authenticated/library': typeof AuthenticatedLibraryRoute
   '/_authenticated/schedule': typeof AuthenticatedScheduleRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
@@ -176,6 +186,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
@@ -193,6 +204,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
@@ -211,6 +223,7 @@ export interface FileRouteTypes {
     | '/_authenticated/library'
     | '/_authenticated/schedule'
     | '/_authenticated/settings'
+    | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
@@ -223,6 +236,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   UnlockRoute: typeof UnlockRoute
+  ApiPublicAutopilotHeartbeatRoute: typeof ApiPublicAutopilotHeartbeatRoute
   ApiPublicAutopilotRunWorkflowRoute: typeof ApiPublicAutopilotRunWorkflowRoute
   ApiPublicAutopilotTickRoute: typeof ApiPublicAutopilotTickRoute
   ApiPublicAutopilotUploadRoute: typeof ApiPublicAutopilotUploadRoute
@@ -344,6 +358,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicAutopilotRunWorkflowRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/autopilot/heartbeat': {
+      id: '/api/public/autopilot/heartbeat'
+      path: '/api/public/autopilot/heartbeat'
+      fullPath: '/api/public/autopilot/heartbeat'
+      preLoaderRoute: typeof ApiPublicAutopilotHeartbeatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -375,6 +396,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   UnlockRoute: UnlockRoute,
+  ApiPublicAutopilotHeartbeatRoute: ApiPublicAutopilotHeartbeatRoute,
   ApiPublicAutopilotRunWorkflowRoute: ApiPublicAutopilotRunWorkflowRoute,
   ApiPublicAutopilotTickRoute: ApiPublicAutopilotTickRoute,
   ApiPublicAutopilotUploadRoute: ApiPublicAutopilotUploadRoute,
