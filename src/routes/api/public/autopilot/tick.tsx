@@ -213,11 +213,13 @@ async function handler(request: Request): Promise<Response> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push({ userId: s.user_id, message: msg.slice(0, 500) });
-      await supabaseAdmin.from("notifications").insert({
-        user_id: s.user_id,
-        title: "Autopilot skipped a slot",
-        message: msg.slice(0, 400),
-      } as never).then(undefined, () => undefined);
+      try {
+        await supabaseAdmin.from("notifications").insert({
+          user_id: s.user_id,
+          title: "Autopilot skipped a slot",
+          message: msg.slice(0, 400),
+        } as never);
+      } catch {}
     }
   }
 
