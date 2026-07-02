@@ -91,7 +91,7 @@ function karaokeFilters(text, sceneDur) {
     const start = (idx * per).toFixed(3);
     const end = ((idx + 1) * per).toFixed(3);
     const txt = escDrawtext(chunk.toUpperCase());
-    return `drawtext=fontfile='${fontfile}':text='${txt}':fontcolor=white:fontsize=88:borderw=6:bordercolor=black@0.9:box=1:boxcolor=black@0.55:boxborderw=22:x=(w-text_w)/2:y=h*0.66:enable='between(t,${start},${end})'`;
+    return `drawtext=fontfile='${fontfile}':text='${txt}':fontcolor=white:fontsize=88:borderw=6:bordercolor=black@0.9:box=1:boxcolor=black@0.55:boxborderw=22:x=(w-text_w)/2:y=h*0.82:enable='between(t,${start},${end})'`;
   }).join(",");
 }
 
