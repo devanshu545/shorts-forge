@@ -139,25 +139,24 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     return data;
   });
 
-function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3): string[] {
+function computeUpcomingSlots(slotHours: number[], slotMinutes: number[], timezone: string, count = 3): string[] {
   const out: string[] = [];
   const now = new Date();
+  const pairs = slotHours.map((h, i) => ({ h, m: slotMinutes[i] ?? 0 }))
+    .sort((a, b) => a.h - b.h || a.m - b.m);
   for (let dayOffset = 0; dayOffset < 3 && out.length < count; dayOffset += 1) {
     const day = new Date(now.getTime() + dayOffset * 86400_000);
-    for (const h of [...slotHours].sort((a, b) => a - b)) {
-      // Build a Date that represents "today at hour h in the user's tz".
-      // Approximation: format now in tz to get local Y-M-D, then use UTC offset diff.
+    for (const { h, m } of pairs) {
       try {
         const local = new Intl.DateTimeFormat("en-CA", {
           timeZone: timezone,
           year: "numeric", month: "2-digit", day: "2-digit",
         }).formatToParts(day);
         const y = local.find((p) => p.type === "year")?.value;
-        const m = local.find((p) => p.type === "month")?.value;
+        const mo = local.find((p) => p.type === "month")?.value;
         const d = local.find((p) => p.type === "day")?.value;
-        if (!y || !m || !d) continue;
-        // Convert wall-clock local time to UTC via a probe date.
-        const probe = new Date(`${y}-${m}-${d}T${String(h).padStart(2, "0")}:00:00Z`);
+        if (!y || !mo || !d) continue;
+        const probe = new Date(`${y}-${mo}-${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`);
         const tzOffsetMinutes = (() => {
           const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
           const localHour = Number(dtf.format(probe));
