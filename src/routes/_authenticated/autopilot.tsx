@@ -219,9 +219,11 @@ function AutopilotPage() {
                 min={1} max={5} step={1}
                 value={[form.videos_per_day]}
                 onValueChange={([v]) => {
-                  const slots = form.slot_hours.slice(0, v);
-                  while (slots.length < v) slots.push(DEFAULT_SLOTS[slots.length] ?? 12 + slots.length);
-                  setForm({ ...form, videos_per_day: v, slot_hours: slots });
+                  const hours = form.slot_hours.slice(0, v);
+                  const mins = form.slot_minutes.slice(0, v);
+                  while (hours.length < v) hours.push(DEFAULT_SLOT_HOURS[hours.length] ?? (12 + hours.length));
+                  while (mins.length < v) mins.push(0);
+                  setForm({ ...form, videos_per_day: v, slot_hours: hours, slot_minutes: mins });
                 }}
                 className="mt-3"
               />
@@ -229,14 +231,28 @@ function AutopilotPage() {
             </div>
 
             <div>
-              <Label>Upload times (hour of day, your local time)</Label>
-              <div className="mt-2 grid grid-cols-5 gap-2">
+              <Label>Upload times (HH:MM, your local time)</Label>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
                 {Array.from({ length: form.videos_per_day }).map((_, i) => (
-                  <Input key={i} type="number" min={0} max={23} value={form.slot_hours[i] ?? 12} onChange={(e) => setSlot(i, Number(e.target.value))} />
+                  <Input
+                    key={i}
+                    type="time"
+                    value={`${fmt2(form.slot_hours[i] ?? 12)}:${fmt2(form.slot_minutes[i] ?? 0)}`}
+                    onChange={(e) => setSlotFromString(i, e.target.value)}
+                  />
                 ))}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Best Shorts times: 9, 13, 19.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Cron runs every 15 min and fires the slot within ±7 min.</p>
             </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+              <div>
+                <Label>Also post to Instagram Reels</Label>
+                <p className="text-xs text-muted-foreground">Cross-posts every upload to your connected IG Business account.</p>
+              </div>
+              <Switch checked={form.instagram_enabled} onCheckedChange={(v) => setForm({ ...form, instagram_enabled: v })} />
+            </div>
+
 
             <div>
               <Label>Timezone</Label>
