@@ -7,6 +7,7 @@ import {
   HeadContent,
   Scripts,
   redirect,
+  isRedirect,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
@@ -66,7 +67,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       const { unlocked } = await checkSiteUnlocked();
       if (!unlocked) throw redirect({ to: "/unlock" });
     } catch (err) {
-      if (err && typeof err === "object" && "isRedirect" in err) throw err;
+      if (isRedirect(err)) throw err;
       throw redirect({ to: "/unlock" });
     }
   },
