@@ -93,18 +93,26 @@ async function generateTtsBase64(text: string, voice: string): Promise<string> {
   return Buffer.from(await res.arrayBuffer()).toString("base64");
 }
 
-function currentSlotKey(hour: number) {
+function currentSlotKey(hour: number, minute: number) {
   const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}${String(minute).padStart(2, "0")}`;
 }
 
-function isSlotDue(slotHours: number[], timezone: string): number | null {
-  // Compute current hour in user's timezone; if it matches a slot, return that hour (UTC-marked as slot key).
+// Returns { utcHour, utcMinute } of the due slot (matching within ±7min window), else null.
+function isSlotDue(slotHours: number[], slotMinutes: number[], timezone: string): { utcHour: number; utcMinute: number } | null {
   try {
     const now = new Date();
-    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, timeZone: timezone });
-    const localHour = Number(fmt.format(now));
-    if (slotHours.includes(localHour)) return now.getUTCHours();
+    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone });
+    const parts = fmt.formatToParts(now);
+    const localHour = Number(parts.find((p) => p.type === "hour")?.value ?? "00");
+    const localMinute = Number(parts.find((p) => p.type === "minute")?.value ?? "00");
+    for (let i = 0; i < slotHours.length; i++) {
+      const h = slotHours[i];
+      const m = slotMinutes[i] ?? 0;
+      if (h !== localHour) continue;
+      // Match within a 7-minute window since GitHub cron runs every 15 min.
+      if (Math.abs(localMinute - m) <= 7) return { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() };
+    }
   } catch {}
   return null;
 }
