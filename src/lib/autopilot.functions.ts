@@ -2,6 +2,24 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 
+const TestSchema = z.object({ baseUrl: z.string().url() });
+
+export const runAutopilotTestNow = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => TestSchema.parse(raw))
+  .handler(async ({ data, context }) => {
+    const secret = process.env.AUTOPILOT_SECRET;
+    if (!secret) throw new Error("AUTOPILOT_SECRET not configured on the server.");
+    const url = `${data.baseUrl.replace(/\/$/, "")}/api/public/autopilot/tick?force=1&user=${context.userId}&limit=1`;
+    const res = await fetch(url, { method: "POST", headers: { "x-autopilot-secret": secret } });
+    const text = await res.text();
+    let parsed: unknown = text;
+    try { parsed = JSON.parse(text); } catch {}
+    if (!res.ok) throw new Error(typeof parsed === "object" && parsed && "error" in parsed ? String((parsed as { error: unknown }).error) : text.slice(0, 300));
+    return parsed as { generatedAt: string; jobs: Array<{ videoId: string; plan: { title: string } }> };
+  });
+
+
 const SettingsSchema = z.object({
   enabled: z.boolean().default(false),
   videos_per_day: z.number().int().min(1).max(5).default(3),
