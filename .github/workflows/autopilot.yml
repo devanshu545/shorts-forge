@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       force_test:
-        description: "Create and render one test short now"
+        description: "Upload latest ready Test Flow video now"
         required: false
         default: "true"
         type: choice
