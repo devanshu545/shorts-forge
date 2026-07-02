@@ -41,7 +41,18 @@ import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
-const DEFAULT_SLOTS = [9, 13, 19];
+const DEFAULT_TIMES = ["09:00", "13:00", "19:00"];
+const WEEKDAYS = [
+  { i: 0, label: "Sun" }, { i: 1, label: "Mon" }, { i: 2, label: "Tue" },
+  { i: 3, label: "Wed" }, { i: 4, label: "Thu" }, { i: 5, label: "Fri" }, { i: 6, label: "Sat" },
+];
+const STYLE_PRESETS = [
+  { key: "pixar", label: "Pixar 3D" },
+  { key: "anime", label: "Ghibli Anime" },
+  { key: "clay",  label: "Claymation" },
+  { key: "paper", label: "Paper Cutout" },
+  { key: "noir",  label: "Cinematic Noir" },
+];
 
 function AutopilotPage() {
   const qc = useQueryClient();
@@ -74,8 +85,13 @@ function AutopilotPage() {
 
   const [form, setForm] = useState({
     enabled: false,
-    videos_per_day: 3,
-    slot_hours: DEFAULT_SLOTS,
+    slot_times: DEFAULT_TIMES as string[],
+    pause_days: [] as number[],
+    characters_pool: [] as string[],
+    voices_pool: [] as string[],
+    style_preset: "pixar",
+    hashtag_pool: [] as string[],
+    auto_pause_on_failures: true,
     topic_mode: "trending" as "trending" | "niche" | "mix",
     niche: "",
     tone: "wholesome and funny",
@@ -87,20 +103,27 @@ function AutopilotPage() {
 
   useEffect(() => {
     if (settings) {
+      const s = settings as any;
       setForm({
-        enabled: settings.enabled,
-        videos_per_day: settings.videos_per_day,
-        slot_hours: settings.slot_hours,
-        topic_mode: settings.topic_mode as "trending" | "niche" | "mix",
-        niche: settings.niche || "",
-        tone: settings.tone,
-        character_key: settings.character_key,
-        voice: settings.voice,
-        privacy: settings.privacy as "public" | "unlisted" | "private",
-        timezone: settings.timezone,
+        enabled: s.enabled,
+        slot_times: (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2, "0")}:00`)) as string[],
+        pause_days: s.pause_days || [],
+        characters_pool: s.characters_pool || [],
+        voices_pool: s.voices_pool || [],
+        style_preset: s.style_preset || "pixar",
+        hashtag_pool: s.hashtag_pool || [],
+        auto_pause_on_failures: s.auto_pause_on_failures !== false,
+        topic_mode: s.topic_mode as "trending" | "niche" | "mix",
+        niche: s.niche || "",
+        tone: s.tone,
+        character_key: s.character_key,
+        voice: s.voice,
+        privacy: s.privacy as "public" | "unlisted" | "private",
+        timezone: s.timezone,
       });
     }
   }, [settings]);
+
 
   const saveMut = useMutation({
     mutationFn: () => saveFn({ data: { ...form, niche: form.niche || null } }),
