@@ -17,13 +17,12 @@ async function parseBody(request: Request) {
 }
 
 async function handler(request: Request): Promise<Response> {
-  const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
-  const url = new URL(request.url);
-  const provided = request.headers.get("x-autopilot-secret") || url.searchParams.get("secret");
-  if (!provided || !secrets.includes(provided)) {
-    return Response.json({ ok: false, error: "Unauthorized: GitHub AUTOPILOT_SECRET does not match the app secret." }, { status: 401 });
+  const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
+  if (!(await isAutopilotRequestAuthorized(request))) {
+    return Response.json({ ok: false, error: "Unauthorized: GitHub workflow is not trusted by this app." }, { status: 401 });
   }
 
+  const url = new URL(request.url);
   const body = await parseBody(request);
   const requestedVideoId = url.searchParams.get("videoId") || body.videoId;
   const requestedUserId = url.searchParams.get("user") || body.userId;

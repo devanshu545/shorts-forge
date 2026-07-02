@@ -13,6 +13,10 @@ on:
           - "true"
           - "false"
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   render-and-upload:
     runs-on: ubuntu-latest
@@ -27,7 +31,8 @@ jobs:
       - name: Show config
         run: |
           echo "APP_BASE_URL is set: ${{ secrets.APP_BASE_URL != '' }}"
-          echo "AUTOPILOT_SECRET is set: ${{ secrets.AUTOPILOT_SECRET != '' }}"
+          echo "AUTOPILOT_SECRET fallback is set: ${{ secrets.AUTOPILOT_SECRET != '' }}"
+          echo "GitHub OIDC auth is enabled for this workflow"
           echo "Manual force test: ${{ github.event_name == 'workflow_dispatch' && inputs.force_test == 'true' }}"
       - name: Run autopilot
         env:

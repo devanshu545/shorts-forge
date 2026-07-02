@@ -13,9 +13,8 @@ type UploadBody = {
 };
 
 async function handler(request: Request): Promise<Response> {
-  const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
-  const provided = request.headers.get("x-autopilot-secret");
-  if (!provided || !secrets.includes(provided)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
+  if (!(await isAutopilotRequestAuthorized(request))) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await request.json()) as UploadBody;
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
