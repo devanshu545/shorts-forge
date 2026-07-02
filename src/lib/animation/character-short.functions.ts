@@ -24,6 +24,36 @@ export const CHARACTERS = {
 } as const;
 export type CharacterKey = keyof typeof CHARACTERS;
 
+export const VOICES = ["alloy", "nova", "shimmer", "echo", "onyx", "fable"] as const;
+export type VoiceKey = (typeof VOICES)[number];
+
+export const EMOTIONS = [
+  "happy",
+  "curious",
+  "surprised",
+  "sad",
+  "determined",
+  "proud",
+  "sleepy",
+  "excited",
+  "scared",
+  "hopeful",
+] as const;
+
+// Visual cues we inject into the image prompt so Flux actually draws the expression.
+const EMOTION_HINTS: Record<string, string> = {
+  happy: "wide joyful smile, sparkling eyes, cheeks slightly raised",
+  curious: "head tilted, one ear up, wide inquisitive eyes, mouth slightly open",
+  surprised: "eyes huge and wide open, mouth in a small round O, ears perked straight up",
+  sad: "droopy eyes, small frown, ears folded down, tiny tear glistening",
+  determined: "focused narrowed eyes, tight closed mouth, brows slightly furrowed, confident pose",
+  proud: "chest puffed out, chin up, gentle satisfied smile, eyes half-closed with contentment",
+  sleepy: "half-closed drowsy eyes, tiny yawn, relaxed floppy posture",
+  excited: "huge grin showing tiny teeth, sparkling eyes, jumping pose, motion lines",
+  scared: "trembling, eyes huge with tiny pupils, ears flat back, hunched shoulders",
+  hopeful: "gentle warm smile, soft dreamy eyes looking up, one paw raised",
+};
+
 // -------------------- Plan (Lovable AI free Gemini) --------------------
 const PlanInputSchema = z.object({
   characterKey: z.string().min(2),
@@ -38,6 +68,8 @@ const SceneBeatSchema = z.object({
   action: z.string().max(200),
   cameraShot: z.string().max(120),
   mood: z.string().max(60),
+  emotion: z.string().max(40).default("happy"),
+  voiceover: z.string().min(3).max(220),
   durationSeconds: z.union([z.literal(5), z.literal(5)]).default(5),
 });
 
@@ -48,7 +80,7 @@ export const CharacterPlanSchema = z.object({
   hashtags: z.array(z.string()).min(3).max(12),
   scenes: z.array(SceneBeatSchema).length(4),
   cta: z.object({
-    top: z.string().max(40).default("Comment for part 2"),
+    top: z.string().max(40).default("Sub for part 2 👇"),
     bottom: z.string().max(20).default("SUBSCRIBE"),
   }),
 });
@@ -77,31 +109,41 @@ export const planCharacterShort = createServerFn({ method: "POST" })
     const provider = createLovableAiGatewayProvider(key);
     const model = provider("google/gemini-2.5-flash");
 
-    const system = `You script viral YouTube Shorts about a single recurring 3D-animated character.
-Return ONLY a JSON object matching this TypeScript type:
+    const emotionList = EMOTIONS.join(" | ");
+    const system = `You script viral narrated YouTube Shorts about a single recurring 3D-animated character.
+Return ONLY a JSON object matching:
 {
-  "title": string,
-  "hook": string,
-  "description": string,
-  "hashtags": string[],
-  "scenes": [ // EXACTLY 4 scenes
-    {"order":1,"setting":string,"action":string,"cameraShot":string,"mood":string,"durationSeconds":5},
-    {"order":2,...},{"order":3,...},{"order":4,...}
+  "title": string,                 // <=60 chars, catchy
+  "hook": string,                  // <=100 chars, first-scene tease
+  "description": string,           // <=300 chars, YouTube description
+  "hashtags": string[],            // 5-8 items, each starts with #
+  "scenes": [                      // EXACTLY 4 scenes
+    {
+      "order": 1,
+      "setting": string,           // concrete environment
+      "action": string,            // ONE physical action the character does
+      "cameraShot": "wide establishing" | "medium shot" | "close-up front" | "over-the-shoulder" | "low-angle hero",
+      "mood": string,              // 1-3 word mood
+      "emotion": ${JSON.stringify(EMOTIONS)},   // pick ONE — drives face expression in the image
+      "voiceover": string          // 1-2 short spoken sentences, <= 22 words, told by a warm narrator ABOUT the character (third person). No stage directions, no quotes, no sound effects.
+    },
+    { "order": 2, ... },
+    { "order": 3, ... },
+    { "order": 4, ... }
   ],
-  "cta": {"top":"Comment for part 2","bottom":"SUBSCRIBE"}
+  "cta": { "top": "Sub for part 2 👇", "bottom": "SUBSCRIBE" }
 }
 Rules:
-- setting = concrete environment.
-- action = ONE simple physical pose/action the character does.
-- cameraShot = one of: "wide establishing", "medium shot", "close-up front", "over-the-shoulder", "low-angle hero".
-- Never describe dialogue or text overlays. Only the single hero character.
-- Scene 1 = hook. Scene 4 = emotional payoff, character looks at camera.`;
+- Only the single hero character is in each scene.
+- The 4 voiceovers together tell one continuous story: setup → complication → turn → payoff.
+- Scene 4 is the emotional payoff AND opens a natural cliffhanger for a "part 2".
+- emotion must be one of: ${emotionList}.`;
 
     const user = `Character: ${data.characterDescription}
 Topic / story: ${data.topic}
 Tone: ${data.tone}
 
-Design 4 scenes. Return the JSON only.`;
+Design 4 scenes with narration + emotion. Return the JSON only.`;
 
     try {
       const { text } = await generateText({ model, system, prompt: user });
@@ -123,17 +165,12 @@ const KeyframeInputSchema = z.object({
   setting: z.string().min(3).max(300),
   action: z.string().min(3).max(300),
   cameraShot: z.string().max(120),
+  emotion: z.string().max(40).default("happy"),
 });
 
-/**
- * Free image generation via pollinations.ai — no key, no signup.
- * Docs: https://image.pollinations.ai/  (public since 2023, community-run gateway to Flux/Turbo)
- */
 async function fetchPollinationsImage(prompt: string, seed: number): Promise<Uint8Array> {
   const encoded = encodeURIComponent(prompt.slice(0, 900));
   const url = `https://image.pollinations.ai/prompt/${encoded}?width=720&height=1280&nologo=true&enhance=true&model=flux&seed=${seed}`;
-
-  // Pollinations sometimes cold-starts; retry a few times.
   let lastErr = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -157,8 +194,8 @@ export const generateSceneKeyframe = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => KeyframeInputSchema.parse(raw))
   .handler(async ({ data, context }) => {
-    const prompt = `${data.characterDescription}. ${data.action}. Scene: ${data.setting}. ${data.cameraShot}. Cinematic 3D Pixar-quality rendering, vertical 9:16 composition, soft rim lighting, storybook color palette, ultra detailed, single subject only, no text, no watermark.`;
-    // Deterministic-ish seed keeps the same character look across scenes
+    const emotionHint = EMOTION_HINTS[data.emotion.toLowerCase()] ?? "expressive face";
+    const prompt = `${data.characterDescription}, showing a clearly ${data.emotion} expression: ${emotionHint}. ${data.action}. Scene: ${data.setting}. ${data.cameraShot}. Cinematic 3D Pixar-quality rendering, vertical 9:16 composition, soft rim lighting, storybook color palette, ultra detailed, single subject only, no text, no watermark, no logo.`;
     const seed = 1000 + data.sceneOrder * 137;
     const bytes = await fetchPollinationsImage(prompt, seed);
     const path = `${context.userId}/${data.videoId}/keyframes/${data.sceneOrder}.jpg`;
@@ -171,6 +208,54 @@ export const generateSceneKeyframe = createServerFn({ method: "POST" })
       .createSignedUrl(path, 60 * 60 * 6);
     if (signErr || !signed) throw new Error(`Signed URL failed: ${signErr?.message}`);
     return { path, url: signed.signedUrl };
+  });
+
+// -------------------- Voiceover (Lovable AI TTS — openai/gpt-4o-mini-tts) --------------------
+const VoiceoverInputSchema = z.object({
+  videoId: z.string().uuid(),
+  sceneOrder: z.number().int().min(1).max(4),
+  text: z.string().min(1).max(500),
+  voice: z.enum(VOICES).default("alloy"),
+});
+
+export const generateSceneVoiceover = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => VoiceoverInputSchema.parse(raw))
+  .handler(async ({ data, context }) => {
+    const key = process.env.LOVABLE_API_KEY;
+    if (!key) throw new Error("LOVABLE_API_KEY not configured");
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4o-mini-tts",
+        input: data.text,
+        voice: data.voice,
+        response_format: "mp3",
+        instructions:
+          "Narrate warmly and expressively like a cozy children's storybook narrator, natural pacing, gentle energy.",
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (res.status === 402) throw new Error("Out of Lovable AI credits. Top up to keep generating narration.");
+      if (res.status === 429) throw new Error("TTS rate limited. Try again in a moment.");
+      throw new Error(`TTS failed (${res.status}): ${body.slice(0, 200)}`);
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const path = `${context.userId}/${data.videoId}/audio/scene-${data.sceneOrder}.mp3`;
+    const { error: upErr } = await context.supabase.storage
+      .from("audio")
+      .upload(path, bytes, { contentType: "audio/mpeg", upsert: true });
+    if (upErr) throw new Error(`Audio upload failed: ${upErr.message}`);
+    const { data: signed, error: signErr } = await context.supabase.storage
+      .from("audio")
+      .createSignedUrl(path, 60 * 60 * 6);
+    if (signErr || !signed) throw new Error(`Audio signed URL failed: ${signErr?.message}`);
+    return { path, url: signed.signedUrl, bytes: bytes.length };
   });
 
 // -------------------- Finalize --------------------
