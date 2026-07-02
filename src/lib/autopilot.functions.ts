@@ -148,25 +148,27 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     return data;
   });
 
-function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3): string[] {
+function computeUpcomingSlots(slotTimes: string[], pauseDays: number[], timezone: string, count = 3): string[] {
   const out: string[] = [];
   const now = new Date();
-  for (let dayOffset = 0; dayOffset < 3 && out.length < count; dayOffset += 1) {
+  const times = [...slotTimes].sort();
+  for (let dayOffset = 0; dayOffset < 7 && out.length < count; dayOffset += 1) {
     const day = new Date(now.getTime() + dayOffset * 86400_000);
-    for (const h of [...slotHours].sort((a, b) => a - b)) {
-      // Build a Date that represents "today at hour h in the user's tz".
-      // Approximation: format now in tz to get local Y-M-D, then use UTC offset diff.
+    for (const t of times) {
       try {
         const local = new Intl.DateTimeFormat("en-CA", {
           timeZone: timezone,
-          year: "numeric", month: "2-digit", day: "2-digit",
+          year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
         }).formatToParts(day);
         const y = local.find((p) => p.type === "year")?.value;
         const m = local.find((p) => p.type === "month")?.value;
         const d = local.find((p) => p.type === "day")?.value;
+        const wd = local.find((p) => p.type === "weekday")?.value;
         if (!y || !m || !d) continue;
-        // Convert wall-clock local time to UTC via a probe date.
-        const probe = new Date(`${y}-${m}-${d}T${String(h).padStart(2, "0")}:00:00Z`);
+        const wdMap: Record<string, number> = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+        if (wd && pauseDays.includes(wdMap[wd])) continue;
+        const [hh, mm] = t.split(":");
+        const probe = new Date(`${y}-${m}-${d}T${hh}:${mm}:00Z`);
         const tzOffsetMinutes = (() => {
           const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
           const localHour = Number(dtf.format(probe));
@@ -183,6 +185,7 @@ function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3):
   }
   return out;
 }
+
 
 export const getAutopilotHealth = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
