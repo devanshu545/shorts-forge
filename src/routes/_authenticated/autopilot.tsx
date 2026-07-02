@@ -11,10 +11,11 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle } from "lucide-react";
 import { toast } from "sonner";
-import { getAutopilotSettings, saveAutopilotSettings, listAutopilotVideos } from "@/lib/autopilot.functions";
+import { getAutopilotSettings, saveAutopilotSettings, listAutopilotVideos, runAutopilotTestNow } from "@/lib/autopilot.functions";
 import { CHARACTERS, VOICES } from "@/lib/animation/character-short.functions";
+
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
@@ -25,6 +26,8 @@ function AutopilotPage() {
   const getFn = useServerFn(getAutopilotSettings);
   const saveFn = useServerFn(saveAutopilotSettings);
   const listFn = useServerFn(listAutopilotVideos);
+  const testFn = useServerFn(runAutopilotTestNow);
+
 
   const { data: settings, isLoading } = useQuery({ queryKey: ["autopilot"], queryFn: () => getFn() });
   const { data: recent } = useQuery({ queryKey: ["autopilot-videos"], queryFn: () => listFn(), refetchInterval: 30000 });
@@ -64,6 +67,22 @@ function AutopilotPage() {
     onSuccess: () => { toast.success("Autopilot saved"); qc.invalidateQueries({ queryKey: ["autopilot"] }); },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  const testMut = useMutation({
+    mutationFn: () => testFn({ data: { baseUrl: window.location.origin } }),
+    onSuccess: (res) => {
+      const n = res?.jobs?.length ?? 0;
+      if (n === 0) {
+        toast.error("Test tick returned 0 jobs. Check that Autopilot is enabled and secrets are set.");
+      } else {
+        const title = res.jobs[0]?.plan?.title ?? "(untitled)";
+        toast.success(`Queued ${n} test job: "${title}". GitHub Actions will render + upload on the next hourly run (or trigger it manually in Actions).`);
+        qc.invalidateQueries({ queryKey: ["autopilot-videos"] });
+      }
+    },
+    onError: (e: Error) => toast.error(`Test failed: ${e.message}`),
+  });
+
 
   const setSlot = (idx: number, val: number) => {
     const arr = [...form.slot_hours];
@@ -197,6 +216,19 @@ function AutopilotPage() {
             <div className="font-medium">AUTOPILOT_SECRET</div>
             <div className="mt-1 text-muted-foreground">Stored in your Lovable Cloud secrets. Copy the same value into your GitHub secret — I can't display it here for safety, so open the Backend view → Secrets to copy it.</div>
           </div>
+
+          <div className="mt-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Run a test now</div>
+                <p className="mt-1 text-xs text-muted-foreground">Forces one autopilot job for your account right now — plans a story, generates 4 keyframes + narration, and queues it. GitHub Actions will pick it up on the next hourly run (or click <em>Run workflow</em> in your repo's Actions tab to render immediately).</p>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => testMut.mutate()} disabled={testMut.isPending}>
+                {testMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Test now
+              </Button>
+            </div>
+          </div>
+
         </Card>
 
         <Card className="glass p-6">

@@ -104,27 +104,40 @@ async function handler(request: Request): Promise<Response> {
   const provided = request.headers.get("x-autopilot-secret") || new URL(request.url).searchParams.get("secret");
   if (!secret || provided !== secret) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const limit = Number(new URL(request.url).searchParams.get("limit") || 3);
+  const url = new URL(request.url);
+  const limit = Number(url.searchParams.get("limit") || 3);
+  const force = url.searchParams.get("force") === "1";
+  const onlyUser = url.searchParams.get("user");
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-  const { data: users, error } = await supabaseAdmin.from("autopilot_settings").select("*").eq("enabled", true);
+  let query = supabaseAdmin.from("autopilot_settings").select("*");
+  if (!force) query = query.eq("enabled", true);
+  if (onlyUser) query = query.eq("user_id", onlyUser);
+  const { data: users, error } = await query;
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   const jobs: unknown[] = [];
   for (const s of users || []) {
     if (jobs.length >= limit) break;
-    const utcHour = isSlotDue(s.slot_hours, s.timezone);
+    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
     if (utcHour === null) continue;
-    const slotKey = currentSlotKey(utcHour);
-    const slotISO = new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
 
-    const { data: existing } = await supabaseAdmin
-      .from("videos")
-      .select("id")
-      .eq("user_id", s.user_id)
-      .eq("autopilot_slot", slotISO)
-      .maybeSingle();
-    if (existing) continue;
+    const slotKey = currentSlotKey(utcHour);
+    const slotISO = force
+      ? new Date().toISOString()
+      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
+
+
+    if (!force) {
+      const { data: existing } = await supabaseAdmin
+        .from("videos")
+        .select("id")
+        .eq("user_id", s.user_id)
+        .eq("autopilot_slot", slotISO)
+        .maybeSingle();
+      if (existing) continue;
+    }
+
 
     try {
       // Pick topic
