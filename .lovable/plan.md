@@ -1,46 +1,72 @@
 ## Goal
-Make video generation complete successfully instead of failing with `Gateway request failed — HTTP 404`, while minimizing paid AI/video retries.
 
-## What I found
-- The app is calling the Vercel `@ai-sdk/gateway` video provider with a Lovable API key and a custom base URL: `https://ai.gateway.lovable.dev/v4/ai`.
-- That provider posts to `/video-model`, but the Lovable AI Gateway request is not appearing in Lovable AI Gateway logs and the UI shows `HTTP 404`.
-- This strongly indicates the video call is hitting the wrong gateway route/adapter, not that your prompt/script is bad.
-- Script generation and metadata use the correct Lovable AI Gateway helper path already.
+Stop requiring the paid Google/Vercel video API keys. Generate free, silent, caption-less animated character shorts using **Remotion** (code-rendered MP4s) so you can produce YouTube-ready content with zero video-API cost. Videos will feature simple animated characters acting out a logical scene — engaging enough to post.
 
-## Implementation plan
-1. **Replace the broken video adapter**
-   - Remove the `@ai-sdk/gateway` video path from `src/lib/media.functions.ts`.
-   - Route video generation through a working Lovable-compatible video endpoint/tooling path instead of the unsupported `/v4/ai/video-model` URL.
-   - Keep Veo 3.1 as the requested model where supported; if that endpoint returns a provider/model limitation, surface the exact provider message instead of generic failure text.
+## What changes
 
-2. **Add a preflight check before spending video credits**
-   - Validate API key availability, model route, duration, aspect ratio, and required input before creating a paid video generation request.
-   - Fail fast with clear instructions if the gateway/model is unavailable, instead of charging/retrying blindly.
+### 1. New free video backend: Remotion-based renderer
 
-3. **Make video generation safer and cheaper**
-   - Use the minimum valid Veo duration for the first successful clip.
-   - Keep `maxRetries: 0` for terminal provider errors.
-   - Do not auto-regenerate after a 400/402/403/404; show the exact cause and stop.
-   - Only retry transient 429/5xx errors with a small backoff if needed.
+- Add a new server path `renderAnimatedShort` in `src/lib/media.functions.ts` that becomes the DEFAULT backend when no `GEMINI_API_KEY` / `AI_GATEWAY_API_KEY` is present.
+- No paid API calls for the actual video pixels. Uses Lovable AI (already free via `LOVABLE_API_KEY`) only for the *scene plan* (JSON describing characters, actions, background, beats).
+- Pipeline:
+  1. Take the existing generated script (scenes + durations).
+  2. Ask Gemini (free tier via Lovable AI) to convert each scene into a structured **animation plan**: character (name, color, emoji face, position), action (walk, jump, hug, wave, spin, chase), background scene (park, kitchen, street, sky), props.
+  3. Render the plan headlessly with Remotion inside the server function to produce a 9:16 1080x1920 MP4.
+  4. Upload the MP4 to the existing `videos` Supabase Storage bucket, return signed URL, update the `videos` row exactly like today.
 
-4. **Harden the server pipeline**
-   - Ensure video rows always move through clear statuses: generating, ready, or failed.
-   - Preserve the script and metadata even when video generation fails so you do not have to pay for script generation again.
-   - Store the generated MP4 in backend storage and return a signed URL.
+### 2. Animated character system (silent, caption-less)
 
-5. **Improve the UI error and retry behavior**
-   - Replace generic `Invalid error response format` with a readable provider-specific error.
-   - Disable the retry button for non-retryable failures unless the user changes input/settings.
-   - Show a clear next action when credits, OAuth, route, or model access is the blocker.
+Since you want **no sound and no captions**, characters must be visually expressive on their own. Built-in library of reusable SVG/CSS characters:
 
-6. **Validate without wasting video credits first**
-   - Run a no-spend/preflight path and check server logs.
-   - Confirm script/metadata persistence still works.
-   - Only run one real minimal video generation attempt after the route is confirmed valid.
-   - Verify the resulting library item has a playable MP4 URL.
+- Simple stylized humanoids (round head + body, animated arms/legs) with 6 base color variants.
+- Facial expressions (happy, shocked, angry, thinking, laughing, crying) swapped per beat.
+- Basic action rigs driven by `useCurrentFrame() + spring()`: walk-cycle, jump, wave, throw, fall, chase, hug, high-five, spin.
+- Background scenes as layered gradients + parametric shapes (park with sun/clouds/grass, kitchen, city street, night sky, boxing ring, classroom).
+- Props: ball, phone, coffee, money bag, heart, question mark, lightning bolt.
 
-## Technical notes
-- Primary file: `src/lib/media.functions.ts`.
-- UI file: `src/routes/_authenticated/generate.tsx`.
-- I will not create mock videos or fake success states.
-- If Veo 3.1 is not available through the runtime gateway for this project, I will make the app say exactly that and point to the required enablement step, rather than burning more retries.
+Each scene reads: `{ characters: [...], action: "chase", background: "park", props: ["ball"], duration: 4 }` and Remotion picks the right rig.
+
+### 3. Backend selection logic
+
+Update `getVideoBackend()` in `src/lib/media.functions.ts`:
+
+- Default: `"remotion-animated"` (free, always available).
+- If user explicitly sets `GEMINI_API_KEY`: allow choosing Veo 3.1.
+- No more "video generation blocked" errors when keys are missing — the free path always works.
+
+### 4. UI (`src/routes/_authenticated/generate.tsx`)
+
+- Add a small selector: **Style** → `Animated characters (free)` (default) / `Realistic video (Veo, needs key)`.
+- Progress messages updated: "Planning scenes…", "Rendering frame 120/900…", "Uploading…".
+- Keep everything else the same; user still clicks **Generate video** and gets an MP4 in library.
+
+### 5. Sandbox rendering setup
+
+- Add `remotion`, `@remotion/cli`, `@remotion/renderer`, `@remotion/bundler`, `@remotion/compositor-linux-x64-musl` to `package.json`.
+- Server function invokes Remotion programmatically (bundle + renderMedia) writing to a temp file, then streams into Supabase storage.
+- Muted output (`muted: true`) to avoid the ffmpeg AAC issue and match your "soundless" requirement.
+
+### 6. Safety / credit protection
+
+- Only 1 Lovable AI call per video (scene-plan JSON) — cheap.
+- Zero external video-API calls in the default path.
+- Preserve existing script + metadata on any render failure so nothing is regenerated.
+- Clear inline error if Remotion render fails (with the actual stderr line).
+
+## Out of scope
+
+- No voiceover, no TTS, no captions/subtitles (per your request).
+- Not touching YouTube OAuth or scheduler this turn.
+
+## Files to edit
+
+- `src/lib/media.functions.ts` — new `renderAnimatedShort` path, updated `getVideoBackend`.
+- `src/lib/animation/` (new) — `plan.ts` (Gemini → plan schema), `characters.tsx`, `scenes.tsx`, `actions.tsx`, `RemotionRoot.tsx`, `AnimatedShort.tsx`.
+- `src/lib/animation/render.server.ts` — programmatic Remotion render helper.
+- `src/routes/_authenticated/generate.tsx` — style selector + updated progress copy.
+- `package.json` — Remotion deps.
+
+## Confirm before I build
+
+1. OK to make **Animated characters (free)** the default and keep Veo as an opt-in when a key is added later?
+2. Target duration caplock animated shorts to 15–30s for faster renders
