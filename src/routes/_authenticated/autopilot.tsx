@@ -216,6 +216,19 @@ function AutopilotPage() {
             <div className="font-medium">AUTOPILOT_SECRET</div>
             <div className="mt-1 text-muted-foreground">Stored in your Lovable Cloud secrets. Copy the same value into your GitHub secret — I can't display it here for safety, so open the Backend view → Secrets to copy it.</div>
           </div>
+
+          <div className="mt-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Run a test now</div>
+                <p className="mt-1 text-xs text-muted-foreground">Forces one autopilot job for your account right now — plans a story, generates 4 keyframes + narration, and queues it. GitHub Actions will pick it up on the next hourly run (or click <em>Run workflow</em> in your repo's Actions tab to render immediately).</p>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => testMut.mutate()} disabled={testMut.isPending}>
+                {testMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Test now
+              </Button>
+            </div>
+          </div>
+
         </Card>
 
         <Card className="glass p-6">
