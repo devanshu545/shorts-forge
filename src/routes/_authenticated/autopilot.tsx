@@ -11,10 +11,11 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle } from "lucide-react";
 import { toast } from "sonner";
-import { getAutopilotSettings, saveAutopilotSettings, listAutopilotVideos } from "@/lib/autopilot.functions";
+import { getAutopilotSettings, saveAutopilotSettings, listAutopilotVideos, runAutopilotTestNow } from "@/lib/autopilot.functions";
 import { CHARACTERS, VOICES } from "@/lib/animation/character-short.functions";
+
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
