@@ -26,6 +26,8 @@ function AutopilotPage() {
   const getFn = useServerFn(getAutopilotSettings);
   const saveFn = useServerFn(saveAutopilotSettings);
   const listFn = useServerFn(listAutopilotVideos);
+  const testFn = useServerFn(runAutopilotTestNow);
+
 
   const { data: settings, isLoading } = useQuery({ queryKey: ["autopilot"], queryFn: () => getFn() });
   const { data: recent } = useQuery({ queryKey: ["autopilot-videos"], queryFn: () => listFn(), refetchInterval: 30000 });
