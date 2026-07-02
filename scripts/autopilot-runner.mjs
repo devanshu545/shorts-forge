@@ -107,36 +107,31 @@ function progressBarFilter(totalDur) {
 }
 
 // Bold hook card overlay for first 1.4 seconds.
+// NOTE inside drawbox `h`/`w` mean box size, so ALL references to input dimensions use `ih`/`iw`.
 function hookFilter(hookText) {
   const fontfile = FONT_PATH.replace(/:/g, "\\:");
   const txt = escDrawtext((hookText || "").toUpperCase().slice(0, 60));
   return [
-    // dim overlay band
-    `drawbox=x=0:y=h*0.20:w=iw:h=h*0.28:color=black@0.60:t=fill:enable='between(t,0,1.4)'`,
-    // headline (static — no comma in x/y expressions to keep filtergraph parseable)
+    `drawbox=x=0:y=ih*0.20:w=iw:h=ih*0.28:color=black@0.60:t=fill:enable='between(t,0,1.4)'`,
     `drawtext=fontfile='${fontfile}':text='${txt}':fontcolor=yellow:fontsize=110:borderw=8:bordercolor=black:x=(w-text_w)/2:y=h*0.28:enable='between(t,0,1.4)'`,
   ].join(",");
 }
 
-// End-card: "Subscribe to @CraftWebStudio" with a pulsing red button, last 2.5s.
+// End-card: "Subscribe to @CraftWebStudio" with a red subscribe button, last 2.5s.
 function endCardFilter(totalDur) {
   const start = Math.max(0, totalDur - 2.5).toFixed(3);
   const end = totalDur.toFixed(3);
   const fontfile = FONT_PATH.replace(/:/g, "\\:");
   return [
-    // dark backdrop
-    `drawbox=x=0:y=h*0.30:w=iw:h=h*0.40:color=black@0.72:t=fill:enable='between(t,${start},${end})'`,
-    // "Subscribe to" small
+    `drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.40:color=black@0.72:t=fill:enable='between(t,${start},${end})'`,
     `drawtext=fontfile='${fontfile}':text='SUBSCRIBE TO':fontcolor=white:fontsize=64:borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.36:enable='between(t,${start},${end})'`,
-    // Channel handle big
     `drawtext=fontfile='${fontfile}':text='${escDrawtext(CHANNEL_HANDLE)}':fontcolor=yellow:fontsize=120:borderw=8:bordercolor=black:x=(w-text_w)/2:y=h*0.44:enable='between(t,${start},${end})'`,
-    // Pulsing red subscribe button (drawbox with alpha oscillation)
-    `drawbox=x=(w-560)/2:y=h*0.58:w=560:h=140:color=red@0.90:t=fill:enable='between(t,${start},${end})'`,
+    `drawbox=x=(iw-560)/2:y=ih*0.58:w=560:h=140:color=red@0.90:t=fill:enable='between(t,${start},${end})'`,
     `drawtext=fontfile='${fontfile}':text='SUBSCRIBE':fontcolor=white:fontsize=88:x=(w-text_w)/2:y=h*0.58+30:enable='between(t,${start},${end})'`,
-    // Bottom arrow hint
     `drawtext=fontfile='${fontfile}':text='TAP THE BELL':fontcolor=white@0.9:fontsize=48:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.72:enable='between(t,${start},${end})'`,
   ].join(",");
 }
+
 
 async function processJob(job) {
   const workDir = join(tmpdir(), `sf-${job.videoId}`);
