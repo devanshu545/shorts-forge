@@ -77,8 +77,9 @@ export const runAutopilotTestNow = createServerFn({ method: "POST" })
 
 const SettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  videos_per_day: z.number().int().min(1).max(5).default(3),
-  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(5),
+  videos_per_day: z.number().int().min(1).max(10).default(3),
+  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(10),
+  slot_minutes: z.array(z.number().int().min(0).max(59)).min(1).max(10).default([0]),
   topic_mode: z.enum(["trending", "niche", "mix"]).default("trending"),
   niche: z.string().max(400).nullable().optional(),
   tone: z.string().min(2).max(80).default("wholesome and funny"),
@@ -86,6 +87,7 @@ const SettingsSchema = z.object({
   voice: z.string().min(2).max(20).default("alloy"),
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
   timezone: z.string().min(1).max(80).default("UTC"),
+  instagram_enabled: z.boolean().default(false),
 });
 
 export const getAutopilotSettings = createServerFn({ method: "GET" })
@@ -104,10 +106,14 @@ export const saveAutopilotSettings = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => SettingsSchema.parse(raw))
   .handler(async ({ data, context }) => {
+    // Normalize slot_minutes to match slot_hours length.
+    const minutes = [...data.slot_minutes];
+    while (minutes.length < data.videos_per_day) minutes.push(0);
     const row = {
       user_id: context.userId,
       ...data,
       slot_hours: data.slot_hours.slice(0, data.videos_per_day),
+      slot_minutes: minutes.slice(0, data.videos_per_day),
       updated_at: new Date().toISOString(),
     };
     const { data: saved, error } = await context.supabase
