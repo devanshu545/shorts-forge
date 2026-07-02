@@ -112,7 +112,7 @@ async function handler(request: Request): Promise<Response> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   let query = supabaseAdmin.from("autopilot_settings").select("*");
-  if (!force) query = query.eq("enabled", true);
+  if (!force || !onlyUser) query = query.eq("enabled", true);
   if (onlyUser) query = query.eq("user_id", onlyUser);
   const { data: users, error } = await query;
   if (error) return Response.json({ error: error.message }, { status: 500 });
