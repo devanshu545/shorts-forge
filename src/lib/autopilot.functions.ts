@@ -172,6 +172,7 @@ function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3):
 export const getAutopilotHealth = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const [settingsRes, recentRes, uploadedRes, notifRes, heartbeatRes, ytRes] = await Promise.all([
       context.supabase.from("autopilot_settings").select("*").eq("user_id", context.userId).maybeSingle(),
       context.supabase.from("videos")
@@ -192,7 +193,9 @@ export const getAutopilotHealth = createServerFn({ method: "GET" })
         .eq("user_id", context.userId)
         .order("created_at", { ascending: false })
         .limit(5),
-      context.supabase.from("autopilot_heartbeats").select("*").eq("source", "github").maybeSingle(),
+      // Heartbeat row is global system state, not per-user. Read with the
+      // service-role client so no signed-in user has direct table access.
+      supabaseAdmin.from("autopilot_heartbeats").select("source,last_ping").eq("source", "github").maybeSingle(),
       context.supabase.from("youtube_connections").select("scope,channel_title,updated_at").eq("user_id", context.userId).maybeSingle(),
     ]);
 
