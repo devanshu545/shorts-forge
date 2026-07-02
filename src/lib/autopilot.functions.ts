@@ -149,43 +149,56 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     return data;
   });
 
+function tzOffsetMs(at: Date, timezone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+  const parts = dtf.formatToParts(at);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  let hour = get("hour"); if (hour === 24) hour = 0;
+  const asUTC = Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"));
+  return asUTC - at.getTime();
+}
+
 function computeUpcomingSlots(slotTimes: string[], pauseDays: number[], timezone: string, count = 3): string[] {
   const out: string[] = [];
   const now = new Date();
-  const times = [...slotTimes].sort();
-  for (let dayOffset = 0; dayOffset < 7 && out.length < count; dayOffset += 1) {
-    const day = new Date(now.getTime() + dayOffset * 86400_000);
-    for (const t of times) {
-      try {
-        const local = new Intl.DateTimeFormat("en-CA", {
-          timeZone: timezone,
-          year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
-        }).formatToParts(day);
-        const y = local.find((p) => p.type === "year")?.value;
-        const m = local.find((p) => p.type === "month")?.value;
-        const d = local.find((p) => p.type === "day")?.value;
-        const wd = local.find((p) => p.type === "weekday")?.value;
-        if (!y || !m || !d) continue;
-        const wdMap: Record<string, number> = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
-        if (wd && pauseDays.includes(wdMap[wd])) continue;
-        const [hh, mm] = t.split(":");
-        const probe = new Date(`${y}-${m}-${d}T${hh}:${mm}:00Z`);
-        const tzOffsetMinutes = (() => {
-          const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
-          const localHour = Number(dtf.format(probe));
-          const utcHour = probe.getUTCHours();
-          return (localHour - utcHour) * 60;
-        })();
-        const slotUtcMs = probe.getTime() - tzOffsetMinutes * 60_000;
-        if (slotUtcMs > now.getTime() - 60_000) {
-          out.push(new Date(slotUtcMs).toISOString());
+  const wdMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const sortedTimes = [...slotTimes].sort();
+
+  for (let dayOffset = 0; dayOffset < 8 && out.length < count; dayOffset += 1) {
+    const dayRef = new Date(now.getTime() + dayOffset * 86400_000);
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
+      }).formatToParts(dayRef);
+      const y = parts.find((p) => p.type === "year")?.value;
+      const m = parts.find((p) => p.type === "month")?.value;
+      const d = parts.find((p) => p.type === "day")?.value;
+      const wd = parts.find((p) => p.type === "weekday")?.value;
+      if (!y || !m || !d) continue;
+      if (wd && pauseDays.includes(wdMap[wd])) continue;
+
+      for (const t of sortedTimes) {
+        const [hh, mm] = t.split(":").map(Number);
+        // Approximate UTC, then subtract that instant's tz offset to land on the intended local wall time.
+        let candidate = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), hh, mm, 0));
+        const offset = tzOffsetMs(candidate, timezone);
+        candidate = new Date(candidate.getTime() - offset);
+        if (candidate.getTime() > now.getTime() - 60_000) {
+          out.push(candidate.toISOString());
           if (out.length >= count) break;
         }
-      } catch { /* ignore */ }
-    }
+      }
+    } catch { /* ignore */ }
   }
-  return out;
+  return out.sort();
 }
+
 
 
 export const getAutopilotHealth = createServerFn({ method: "GET" })

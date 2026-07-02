@@ -127,14 +127,26 @@ function slotISOForToday(hhmm: string, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
   }).formatToParts(now);
-  const y = parts.find((p) => p.type === "year")?.value;
-  const m = parts.find((p) => p.type === "month")?.value;
-  const d = parts.find((p) => p.type === "day")?.value;
-  const probe = new Date(`${y}-${m}-${d}T${hhmm}:00Z`);
-  const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
-  const tzOffsetMinutes = (Number(dtf.format(probe)) - probe.getUTCHours()) * 60;
-  return new Date(probe.getTime() - tzOffsetMinutes * 60_000).toISOString();
+  const y = Number(parts.find((p) => p.type === "year")?.value);
+  const m = Number(parts.find((p) => p.type === "month")?.value);
+  const d = Number(parts.find((p) => p.type === "day")?.value);
+  const [hh, mm] = hhmm.split(":").map(Number);
+  let candidate = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
+  // Compute this instant's tz offset (handles half-hour zones & DST wraps).
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+  const p2 = dtf.formatToParts(candidate);
+  const g = (t: string) => Number(p2.find((x) => x.type === t)?.value);
+  let h = g("hour"); if (h === 24) h = 0;
+  const asUTC = Date.UTC(g("year"), g("month") - 1, g("day"), h, g("minute"), g("second"));
+  const offset = asUTC - candidate.getTime();
+  candidate = new Date(candidate.getTime() - offset);
+  return candidate.toISOString();
 }
+
 
 const STYLE_PROMPTS: Record<string, string> = {
   pixar: "Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading",
