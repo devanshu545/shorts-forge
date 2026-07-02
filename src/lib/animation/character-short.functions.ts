@@ -5,7 +5,7 @@ import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
 
-// -------------------- Plan --------------------
+// -------------------- Character presets --------------------
 export const CHARACTERS = {
   ginger_cat:
     "chubby fluffy ginger tabby cat, huge round emerald green eyes, tiny pink triangular nose, small white chest patch, wearing a thin gold chain necklace with a shiny gold letter 'S' pendant, expressive cartoon face, 3D Pixar-quality rendering, soft studio lighting, DreamWorks style",
@@ -24,9 +24,10 @@ export const CHARACTERS = {
 } as const;
 export type CharacterKey = keyof typeof CHARACTERS;
 
+// -------------------- Plan (Lovable AI free Gemini) --------------------
 const PlanInputSchema = z.object({
   characterKey: z.string().min(2),
-  characterDescription: z.string().min(10).max(600), // resolved by client from CHARACTERS map or custom
+  characterDescription: z.string().min(10).max(600),
   topic: z.string().min(3).max(200),
   tone: z.string().min(2).max(60).default("wholesome"),
 });
@@ -79,28 +80,28 @@ export const planCharacterShort = createServerFn({ method: "POST" })
     const system = `You script viral YouTube Shorts about a single recurring 3D-animated character.
 Return ONLY a JSON object matching this TypeScript type:
 {
-  "title": string,                // <=60 chars, catchy
-  "hook": string,                 // <=100 chars, first-scene tease
-  "description": string,          // <=300 chars, YouTube description
-  "hashtags": string[],           // 5-8 items, each starts with #
-  "scenes": [                     // EXACTLY 4 scenes, each 5 seconds
+  "title": string,
+  "hook": string,
+  "description": string,
+  "hashtags": string[],
+  "scenes": [ // EXACTLY 4 scenes
     {"order":1,"setting":string,"action":string,"cameraShot":string,"mood":string,"durationSeconds":5},
     {"order":2,...},{"order":3,...},{"order":4,...}
   ],
   "cta": {"top":"Comment for part 2","bottom":"SUBSCRIBE"}
 }
 Rules:
-- setting = concrete environment (e.g. "sunlit pond with wooden dock in green rolling hills").
-- action = ONE simple physical action the character does in that scene (e.g. "sits on dock and casts a fishing rod, watching the bobber").
+- setting = concrete environment.
+- action = ONE simple physical pose/action the character does.
 - cameraShot = one of: "wide establishing", "medium shot", "close-up front", "over-the-shoulder", "low-angle hero".
-- Never describe dialogue, text overlays, or other characters. Only the single hero character.
-- Scene 1 = introduction / hook. Scene 4 = emotional payoff where character looks at camera.`;
+- Never describe dialogue or text overlays. Only the single hero character.
+- Scene 1 = hook. Scene 4 = emotional payoff, character looks at camera.`;
 
     const user = `Character: ${data.characterDescription}
 Topic / story: ${data.topic}
 Tone: ${data.tone}
 
-Design 4 scenes that tell this story visually. Return the JSON only.`;
+Design 4 scenes. Return the JSON only.`;
 
     try {
       const { text } = await generateText({ model, system, prompt: user });
@@ -114,7 +115,7 @@ Design 4 scenes that tell this story visually. Return the JSON only.`;
     }
   });
 
-// -------------------- Keyframe (Lovable AI image gen) --------------------
+// -------------------- Keyframe (Pollinations — free, no API key) --------------------
 const KeyframeInputSchema = z.object({
   videoId: z.string().uuid(),
   sceneOrder: z.number().int().min(1).max(4),
@@ -124,179 +125,61 @@ const KeyframeInputSchema = z.object({
   cameraShot: z.string().max(120),
 });
 
-async function callLovableImage(prompt: string): Promise<Uint8Array> {
-  const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY not configured");
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-image-2",
-      prompt,
-      size: "1024x1536",
-      quality: "low",
-      n: 1,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 402) throw new Error("Out of Lovable AI credits. Top up to keep generating.");
-    if (res.status === 429) throw new Error("Rate limited. Try again in a moment.");
-    throw new Error(`Image generation failed (${res.status}): ${text.slice(0, 300)}`);
+/**
+ * Free image generation via pollinations.ai — no key, no signup.
+ * Docs: https://image.pollinations.ai/  (public since 2023, community-run gateway to Flux/Turbo)
+ */
+async function fetchPollinationsImage(prompt: string, seed: number): Promise<Uint8Array> {
+  const encoded = encodeURIComponent(prompt.slice(0, 900));
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=720&height=1280&nologo=true&enhance=true&model=flux&seed=${seed}`;
+
+  // Pollinations sometimes cold-starts; retry a few times.
+  let lastErr = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { Accept: "image/*" } });
+      if (res.ok) {
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (buf.byteLength > 2000) return buf;
+        lastErr = `empty response (${buf.byteLength} bytes)`;
+      } else {
+        lastErr = `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+    }
+    await new Promise((r) => setTimeout(r, 1500 + attempt * 1500));
   }
-  const body = (await res.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
-  const first = body.data?.[0];
-  if (!first) throw new Error("Image API returned no data");
-  if (first.b64_json) {
-    const bin = atob(first.b64_json);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  if (first.url) {
-    const r = await fetch(first.url);
-    if (!r.ok) throw new Error(`Failed to download generated image (${r.status})`);
-    return new Uint8Array(await r.arrayBuffer());
-  }
-  throw new Error("Image API returned no image payload");
+  throw new Error(`Pollinations image failed after retries: ${lastErr}`);
 }
 
 export const generateSceneKeyframe = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => KeyframeInputSchema.parse(raw))
   .handler(async ({ data, context }) => {
-    const prompt = `${data.characterDescription}. ${data.action}. Scene: ${data.setting}. ${data.cameraShot}. Cinematic 3D Pixar-quality rendering, vertical 9:16 composition, soft rim lighting, storybook color palette, single subject only.`;
-    const bytes = await callLovableImage(prompt);
-    const path = `${context.userId}/${data.videoId}/keyframes/${data.sceneOrder}.png`;
+    const prompt = `${data.characterDescription}. ${data.action}. Scene: ${data.setting}. ${data.cameraShot}. Cinematic 3D Pixar-quality rendering, vertical 9:16 composition, soft rim lighting, storybook color palette, ultra detailed, single subject only, no text, no watermark.`;
+    // Deterministic-ish seed keeps the same character look across scenes
+    const seed = 1000 + data.sceneOrder * 137;
+    const bytes = await fetchPollinationsImage(prompt, seed);
+    const path = `${context.userId}/${data.videoId}/keyframes/${data.sceneOrder}.jpg`;
     const { error: upErr } = await context.supabase.storage
       .from("videos")
-      .upload(path, bytes, { contentType: "image/png", upsert: true });
+      .upload(path, bytes, { contentType: "image/jpeg", upsert: true });
     if (upErr) throw new Error(`Storage upload failed: ${upErr.message}`);
     const { data: signed, error: signErr } = await context.supabase.storage
       .from("videos")
-      .createSignedUrl(path, 60 * 60 * 2);
+      .createSignedUrl(path, 60 * 60 * 6);
     if (signErr || !signed) throw new Error(`Signed URL failed: ${signErr?.message}`);
     return { path, url: signed.signedUrl };
   });
 
-// -------------------- Clip (fal.ai Kling image-to-video) --------------------
-const ClipInputSchema = z.object({
-  videoId: z.string().uuid(),
-  sceneOrder: z.number().int().min(1).max(4),
-  imageUrl: z.string().url(),
-  prompt: z.string().min(3).max(600),
-  durationSeconds: z.union([z.literal(5), z.literal(10)]).default(5),
-});
-
-async function falKlingImageToVideo(opts: {
-  imageUrl: string;
-  prompt: string;
-  duration: 5 | 10;
-}): Promise<string> {
-  const key = process.env.FAL_KEY;
-  if (!key) throw new Error("FAL_KEY not configured");
-  const submit = await fetch(
-    "https://queue.fal.run/fal-ai/kling-video/v1.6/standard/image-to-video",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        image_url: opts.imageUrl,
-        prompt: opts.prompt,
-        duration: String(opts.duration),
-        aspect_ratio: "9:16",
-        cfg_scale: 0.5,
-      }),
-    },
-  );
-  if (!submit.ok) {
-    const text = await submit.text();
-    if (submit.status === 403 && /balance|locked|exhaust/i.test(text)) {
-      throw new Error(
-        "fal.ai balance is empty. Top up at https://fal.ai/dashboard/billing (minimum $5) then try again.",
-      );
-    }
-    if (submit.status === 401) {
-      throw new Error("fal.ai key rejected. Check the FAL_KEY secret is a valid key from fal.ai/dashboard/keys.");
-    }
-    throw new Error(`fal submit failed (${submit.status}): ${text.slice(0, 300)}`);
-  }
-  const submitted = (await submit.json()) as {
-    request_id: string;
-    status_url: string;
-    response_url: string;
-  };
-
-  // Poll up to ~5 minutes
-  const started = Date.now();
-  const deadline = started + 5 * 60 * 1000;
-  let delay = 4000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, delay));
-    const st = await fetch(submitted.status_url, { headers: { Authorization: `Key ${key}` } });
-    if (!st.ok) {
-      const t = await st.text();
-      throw new Error(`fal status failed (${st.status}): ${t.slice(0, 200)}`);
-    }
-    const body = (await st.json()) as { status: string };
-    if (body.status === "COMPLETED") break;
-    if (body.status === "FAILED" || body.status === "ERROR") {
-      throw new Error(`fal generation ${body.status.toLowerCase()}`);
-    }
-    delay = Math.min(delay + 1000, 8000);
-  }
-
-  const final = await fetch(submitted.response_url, {
-    headers: { Authorization: `Key ${key}` },
-  });
-  if (!final.ok) {
-    const t = await final.text();
-    throw new Error(`fal response fetch failed (${final.status}): ${t.slice(0, 200)}`);
-  }
-  const payload = (await final.json()) as { video?: { url?: string } };
-  const videoUrl = payload.video?.url;
-  if (!videoUrl) throw new Error("fal returned no video url");
-  return videoUrl;
-}
-
-export const generateSceneClip = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => ClipInputSchema.parse(raw))
-  .handler(async ({ data, context }) => {
-    const falUrl = await falKlingImageToVideo({
-      imageUrl: data.imageUrl,
-      prompt: data.prompt,
-      duration: data.durationSeconds,
-    });
-    // Re-host on Supabase for CORS-safe client stitching
-    const dl = await fetch(falUrl);
-    if (!dl.ok) throw new Error(`Failed downloading fal video (${dl.status})`);
-    const bytes = new Uint8Array(await dl.arrayBuffer());
-    const path = `${context.userId}/${data.videoId}/clips/${data.sceneOrder}.mp4`;
-    const { error: upErr } = await context.supabase.storage
-      .from("videos")
-      .upload(path, bytes, { contentType: "video/mp4", upsert: true });
-    if (upErr) throw new Error(`Clip upload failed: ${upErr.message}`);
-    const { data: signed, error: signErr } = await context.supabase.storage
-      .from("videos")
-      .createSignedUrl(path, 60 * 60 * 6);
-    if (signErr || !signed) throw new Error(`Clip signed URL failed: ${signErr?.message}`);
-    return { path, url: signed.signedUrl, bytes: bytes.length };
-  });
-
-// -------------------- Finalize (mark row ready with stitched video) --------------------
+// -------------------- Finalize --------------------
 const FinalizeSchema = z.object({
   videoId: z.string().uuid(),
   storagePath: z.string().min(3),
   signedUrl: z.string().url(),
   fileSize: z.number().int().min(1),
-  durationSeconds: z.number().min(1).max(60),
+  durationSeconds: z.number().min(1).max(120),
 });
 
 export const finalizeCharacterShort = createServerFn({ method: "POST" })
