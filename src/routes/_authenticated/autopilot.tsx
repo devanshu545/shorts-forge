@@ -12,7 +12,7 @@ import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download, Activity, AlertCircle, CheckCircle2, Clock } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download, Activity, AlertCircle, CheckCircle2, Clock, Plus, X, Palette, Hash } from "lucide-react";
 import { toast } from "sonner";
 import {
   getAutopilotSettings,
