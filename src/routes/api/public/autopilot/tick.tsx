@@ -164,14 +164,17 @@ async function handler(request: Request): Promise<Response> {
 
   // Preview: what slots are due right now for each enabled user.
   const preview = (users || []).map((s) => {
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
+    const slotTimes: string[] = (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2,"0")}:00`));
+    const pauseDays: number[] = s.pause_days || [];
+    const matched = force ? (slotTimes[0] ?? "00:00") : isSlotDue(slotTimes, pauseDays, s.timezone);
     return {
       userId: s.user_id,
       enabled: s.enabled,
       timezone: s.timezone,
-      slotHours: s.slot_hours,
-      dueUtcHour: utcHour,
-      isDue: utcHour !== null,
+      slotTimes,
+      pauseDays,
+      dueSlot: matched,
+      isDue: matched !== null,
     };
   });
 
@@ -197,8 +200,10 @@ async function handler(request: Request): Promise<Response> {
   const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
   for (const s of users || []) {
     if (jobs.length >= limit) break;
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
-    if (utcHour === null) continue;
+    const slotTimes: string[] = (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2,"0")}:00`));
+    const pauseDays: number[] = s.pause_days || [];
+    const matched = force ? (slotTimes[0] ?? "00:00") : isSlotDue(slotTimes, pauseDays, s.timezone);
+    if (matched === null) continue;
 
     // Preflight: don't burn AI credits if YouTube isn't connected/usable.
     try {
@@ -216,11 +221,8 @@ async function handler(request: Request): Promise<Response> {
       continue;
     }
 
-    const slotKey = currentSlotKey(utcHour);
-    const slotISO = force
-      ? new Date().toISOString()
-      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
-
+    const slotISO = force ? new Date().toISOString() : slotISOForToday(matched, s.timezone);
+    void currentSlotKey; // preserved for backward-compat imports
 
     if (!force) {
       const { data: existing } = await supabaseAdmin
@@ -231,6 +233,8 @@ async function handler(request: Request): Promise<Response> {
         .maybeSingle();
       if (existing) continue;
     }
+
+
 
 
     let reservedId: string | null = null;
