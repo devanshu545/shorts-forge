@@ -75,6 +75,7 @@ export type Database = {
           character_key: string
           created_at: string
           enabled: boolean
+          instagram_enabled: boolean
           niche: string | null
           privacy: string
           slot_hours: number[]
@@ -91,6 +92,7 @@ export type Database = {
           character_key?: string
           created_at?: string
           enabled?: boolean
+          instagram_enabled?: boolean
           niche?: string | null
           privacy?: string
           slot_hours?: number[]
@@ -107,6 +109,7 @@ export type Database = {
           character_key?: string
           created_at?: string
           enabled?: boolean
+          instagram_enabled?: boolean
           niche?: string | null
           privacy?: string
           slot_hours?: number[]
