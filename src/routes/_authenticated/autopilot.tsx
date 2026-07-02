@@ -370,7 +370,7 @@ function AutopilotPage() {
                         {r.error_message ? ` · ${r.error_message.slice(0, 80)}` : ""}
                       </div>
                     </div>
-                    <Badge variant={r.status === "uploaded" || r.youtube_video_id ? "default" : r.status === "failed" ? "destructive" : "secondary"}>
+                    <Badge variant={r.youtube_video_id ? "default" : r.status === "failed" ? "destructive" : "secondary"}>
                       {r.youtube_video_id ? "uploaded" : r.status}
                     </Badge>
                   </li>
