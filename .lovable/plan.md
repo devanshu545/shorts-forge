@@ -1,68 +1,73 @@
-## Goal
+# How the automatic 3-shorts-a-day pipeline actually works
 
-Make the GitHub workflow stop failing and make the whole flow match your expectation:
+Short answer: it is already fully server-side. Your laptop, browser, and internet are not involved once Autopilot is ON. Here is exactly what runs, on whose machine, using whose internet — and what I will add so you can trust it without watching it.
+
+## The moving parts (already built)
 
 ```text
-Test Flow in app -> creates preview video only
-Run workflow in GitHub -> uploads that ready test video to YouTube
-Automatic schedule -> creates and uploads 3 shorts/day when laptop is off
+GitHub Actions (cron: every hour UTC)
+        │  runs on GitHub's Ubuntu VM, GitHub's internet
+        ▼
+scripts/autopilot-runner.mjs
+        │  authenticates with GitHub OIDC (no secret needed)
+        ▼
+POST  https://devanshuautomation.lovable.app/api/public/autopilot/tick
+        │  runs on Lovable Cloud (Cloudflare Worker), Lovable's internet
+        │  ─ reads autopilot_settings for every enabled user
+        │  ─ checks: is current hour one of user's slot_hours (in their TZ)?
+        │  ─ if yes AND no video already exists for that slot:
+        │       • plan story (Lovable AI Gateway, Gemini)
+        │       • generate 4 keyframe images (Pollinations, free)
+        │       • generate 4 TTS clips (Lovable AI Gateway, gpt-4o-mini-tts)
+        │       • reserve a row in `videos` (status = generating_video)
+        │       • return {images[], audios[], plan} as base64 to GitHub
+        ▼
+GitHub VM stitches with ffmpeg
+        │  Ken-Burns zoom, concat, SUBSCRIBE watermark, end card, thumbnail
+        ▼
+POST  /api/public/autopilot/upload  (base64 mp4 + thumb)
+        │  Lovable Cloud → YouTube Data API v3 resumable upload
+        │  using your stored Google OAuth refresh token (auto-refreshes)
+        ▼
+YouTube publishes the Short, row updated to status=uploaded + youtube_video_id
 ```
 
-## What is wrong right now
+So the answer to your three questions:
 
-The GitHub workflow is still calling `/api/public/autopilot/tick?force=1`, which tries to create a brand-new autopilot job on GitHub. That path depends on server-side image/TTS generation and can fail before upload. It also does not know about the test video you already generated in the app.
+- **How does it generate without you?** Planning + images + TTS run on Lovable Cloud from a cron-triggered HTTP call. ffmpeg stitching runs on GitHub's Ubuntu runner. Nothing runs on your laptop.
+- **Whose internet?** GitHub Actions' internet for the cron trigger and ffmpeg step; Lovable Cloud's internet for AI calls and the YouTube upload. Yours is never used.
+- **How does it hit 3/day?** `autopilot_settings.slot_hours` (e.g. `[9, 14, 20]` in your timezone). The hourly cron checks each slot; when the current hour matches a slot and no video exists yet for that slot (unique key `autopilot_slot`), it generates and uploads one. Idempotent — reruns of the same hour won't double-post.
 
-So your app Test Flow works, but GitHub Run Workflow is testing the old all-in-one path instead of uploading the ready test short.
+## Why the current setup is trustworthy, and what's still missing
 
-## Implementation plan
+Already safe:
+- Slot dedupe via `autopilot_slot` column → no duplicate uploads even if cron retries.
+- Scheduled runner also calls `run-workflow` with `onlyAutopilot: true` first, so any short that rendered but failed to upload last hour gets retried automatically.
+- Failed generations write to `notifications` and mark the video row `failed` with the error, so nothing silently disappears.
+- OAuth refresh token is stored server-side; YouTube upload code auto-refreshes access tokens.
 
-1. **Add a dedicated GitHub manual-upload endpoint**
-  - Create a public protected endpoint like `/api/public/autopilot/run-workflow`.
-  - It will verify `AUTOPILOT_SECRET`.
-  - In manual test mode, it will find the latest `ready` video with no `youtube_video_id`.
-  - It will upload that existing video to YouTube.
-  - It will save the YouTube video ID back to the video row.
-  - It will return clean JSON: success/failure, video ID, YouTube URL.
-2. **Reuse the existing YouTube upload logic safely**
-  - Extract shared upload helper code from `uploadVideoToYouTube` so both the app button and GitHub endpoint use the same working upload path.
-  - Keep the current app `Run Workflow` button working.
-  - Keep progress UI in the app.
-3. **Change GitHub manual Run Workflow behavior**
-  - Update `scripts/autopilot-runner.mjs` so when `force_test=true`, it does NOT generate another short.
-  - Instead it calls the new endpoint to upload the latest test video already saved in Library.
-  - If no ready test video exists, GitHub should show a clear message: “Generate Test Flow first.”
-4. **Keep automatic 3/day scheduling intact**
-  - Normal hourly GitHub schedule will still call `/api/public/autopilot/tick`.
-  - Scheduled mode will keep generating, rendering, and uploading due shorts when laptop is off.
-  - Manual test mode will be separate and will not disturb the existing autopilot schedule.
-5. **Improve errors shown in GitHub logs**
-  - Replace confusing `Tick failed 401` / generic `exit code 1` with exact causes:
-    - secret mismatch
-    - no YouTube connection
-    - no ready test video
-    - upload permission missing
-    - YouTube API upload error
-6. **Verification after implementation**
-  - Check the code paths for:
-    - Test Flow creates a ready video only.
-    - GitHub manual workflow uploads an existing ready video.
-    - Scheduled workflow still generates/uploads based on slots.
-  - Use available runtime/server logs and a safe endpoint test where possible without wasting generation credits.
+Gaps I want to close so you can actually trust it unattended:
 
-## Expected result just for test 
+1. **No end-to-end proof it survives a real slot without you.** Right now you've only tested via the manual "force" button. I'll add a `dry-run scheduled` check the workflow prints every hour: which users are enabled, which slots are due, and what it would generate — visible in GitHub Actions log even on hours nothing is due.
+2. **No health dashboard in the app.** I'll add an "Autopilot Health" card to the Autopilot tab showing: last successful upload time, next 3 scheduled slots (in your timezone), last 5 runs with status/YouTube link/error, and a red banner if the last 2 slots both failed.
+3. **No alert if YouTube token expires or gets revoked.** I'll add a check in `tick`: if the user's Google connection is missing/expired, skip generation (don't waste credits), insert a notification "Reconnect YouTube in Settings", and surface it in the health card.
+4. **No alert if GitHub Actions itself stops running.** I'll add a "last cron heartbeat" timestamp: the runner pings `/api/public/autopilot/heartbeat` every hour. The health card shows "⚠ No cron ping in 2h+" if GitHub is silent — so you notice within hours, not days.
+5. **Verify one real automatic slot end-to-end.** After the above ships, I'll set one of your `slot_hours` to the next upcoming hour, publish, wait for the GitHub cron to fire naturally (not the manual button), and confirm the video appears on YouTube with the correct slot key. Then restore your original slots.
 
-After this, your test process will be:
+## Files I will touch
 
-1. Click **Test Flow** in Autopilot tab.
-2. Confirm the video preview appears.
-3. Go to GitHub Actions and click **Run workflow** with `force_test=true`.
-4. GitHub uploads that same ready test video to YouTube.
-5. The database stores the YouTube Video ID and the app shows the YouTube link.
+- `src/routes/api/public/autopilot/heartbeat.tsx` — new tiny endpoint, writes `autopilot_heartbeats(last_ping timestamptz)`.
+- `scripts/autopilot-runner.mjs` — call heartbeat first thing every run; log a per-user "due-slot preview" line.
+- `src/routes/api/public/autopilot/tick.tsx` — pre-check YouTube connection; skip + notify if missing/expired; return that in the response for GitHub log.
+- `src/lib/autopilot.functions.ts` — new `getAutopilotHealth` server fn (last upload, upcoming slots, recent runs, heartbeat freshness, youtube-connection status).
+- `src/routes/_authenticated/autopilot.tsx` — add "Autopilot Health" card at the top with heartbeat, next slots, recent runs, and a "Reconnect YouTube" CTA when needed.
+- One migration: `autopilot_heartbeats` table + GRANTs + RLS + index on `videos(user_id, autopilot_slot)` if missing.
 
-For real autopilot, leave the switch enabled and GitHub Actions will run hourly, publishing up to your configured 3 shorts/day at your selected times.  
-  
-and after it is success the daily 3 shorts should be automatic upload by using these workflow mkae sure user even should not know that the video is published like it should work full automation and dont need a user intraction anymore after this
+## Verification checklist (I will not stop until all are green)
 
-&nbsp;
-
-&nbsp;
+- [ ] Publish app.
+- [ ] GitHub cron fires on the next hour → Actions log shows heartbeat ping, due-slot preview, and either "no slot due" or an upload.
+- [ ] Health card in the app shows fresh heartbeat within 65 min.
+- [ ] Set one slot to the next hour, wait for natural cron (no manual button), confirm YouTube publish + row status `uploaded` + slot key matches.
+- [ ] Restore your original slots.
+- [ ] Disconnect YouTube in a test → next tick skips generation, notification appears, health card shows red "Reconnect" CTA. Reconnect and confirm green.

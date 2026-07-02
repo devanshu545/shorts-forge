@@ -49,6 +49,27 @@ export type Database = {
           },
         ]
       }
+      autopilot_heartbeats: {
+        Row: {
+          detail: Json | null
+          last_ping: string
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          detail?: Json | null
+          last_ping?: string
+          source: string
+          updated_at?: string
+        }
+        Update: {
+          detail?: Json | null
+          last_ping?: string
+          source?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       autopilot_settings: {
         Row: {
           character_key: string
