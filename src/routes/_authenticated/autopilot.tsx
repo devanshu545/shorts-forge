@@ -174,11 +174,22 @@ function AutopilotPage() {
     }
   };
 
-  const setSlot = (idx: number, val: number) => {
+  const setSlotHour = (idx: number, val: number) => {
     const arr = [...form.slot_hours];
     arr[idx] = Math.max(0, Math.min(23, val));
     setForm((f) => ({ ...f, slot_hours: arr }));
   };
+  const setSlotMinute = (idx: number, val: number) => {
+    const arr = [...form.slot_minutes];
+    arr[idx] = Math.max(0, Math.min(59, val));
+    setForm((f) => ({ ...f, slot_minutes: arr }));
+  };
+  const setSlotFromString = (idx: number, val: string) => {
+    const [h, m] = val.split(":").map((n) => Number(n));
+    if (!Number.isNaN(h)) setSlotHour(idx, h);
+    if (!Number.isNaN(m)) setSlotMinute(idx, m);
+  };
+  const fmt2 = (n: number) => String(n).padStart(2, "0");
 
   const testRunning = testStatus === "running";
   const hasReadyTest = !!(testVideo && testVideo.video_url && !testVideo.youtube_video_id);
