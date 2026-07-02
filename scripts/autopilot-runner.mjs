@@ -290,9 +290,6 @@ async function processJob(job) {
       tags,
       privacy: job.privacy,
       durationSeconds: totalVideoDur,
-      instagramEnabled: Boolean(job.instagramEnabled),
-      igCaption: job.igCaption ?? null,
-      igHashtags: job.igHashtags ?? null,
     }),
   });
   const uploadText = await uploadRes.text();

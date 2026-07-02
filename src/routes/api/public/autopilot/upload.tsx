@@ -10,9 +10,6 @@ type UploadBody = {
   tags: string[];
   privacy: "public" | "unlisted" | "private";
   durationSeconds: number;
-  instagramEnabled?: boolean;
-  igCaption?: string;
-  igHashtags?: string[];
 };
 
 async function handler(request: Request): Promise<Response> {
@@ -24,11 +21,13 @@ async function handler(request: Request): Promise<Response> {
 
   try {
     const mp4 = new Uint8Array(Buffer.from(body.mp4Base64, "base64"));
+    // Store MP4 in Supabase Storage
     const path = `${body.userId}/${body.videoId}/final.mp4`;
     const { error: upErr } = await supabaseAdmin.storage.from("videos").upload(path, mp4, { contentType: "video/mp4", upsert: true });
     if (upErr) throw new Error(`Storage upload failed: ${upErr.message}`);
     const { data: signed } = await supabaseAdmin.storage.from("videos").createSignedUrl(path, 60 * 60 * 24 * 7);
 
+    // Thumbnail
     let thumbPath: string | null = null;
     let thumbUrl: string | null = null;
     if (body.thumbnailBase64) {
@@ -50,8 +49,6 @@ async function handler(request: Request): Promise<Response> {
       thumbnail_url: thumbUrl,
       thumbnail_storage_path: thumbPath,
       error_message: null,
-      ...(body.igCaption ? { ig_caption: body.igCaption } : {}),
-      ...(body.igHashtags?.length ? { ig_hashtags: body.igHashtags } : {}),
     } as never).eq("id", body.videoId);
 
     let ytId: string | null = null;
@@ -77,42 +74,13 @@ async function handler(request: Request): Promise<Response> {
       } as never).eq("id", body.videoId);
     }
 
-    // Cross-post to Instagram if the user turned it on.
-    let igId: string | null = null;
-    let igError: string | null = null;
-    if (body.instagramEnabled) {
-      try {
-        const { publishExistingVideoToInstagram } = await import("@/lib/instagram-upload.server");
-        const igRes = await publishExistingVideoToInstagram({
-          supabaseAdmin,
-          userId: body.userId,
-          videoId: body.videoId,
-          caption: body.igCaption ?? null,
-          hashtags: body.igHashtags ?? null,
-        });
-        igId = igRes.mediaId;
-      } catch (err) {
-        igError = err instanceof Error ? err.message : String(err);
-        await supabaseAdmin.from("videos").update({ instagram_error: igError } as never).eq("id", body.videoId);
-      }
-    }
-
-    const notifTitle = ytId && igId
-      ? "Autopilot published on YouTube + Instagram 🚀"
-      : ytId
-        ? (body.instagramEnabled ? "Autopilot uploaded to YouTube (Instagram failed)" : "Autopilot uploaded a Short 🚀")
-        : "Autopilot rendered a Short (upload failed)";
-    const notifMsg = [
-      ytId ? `YouTube: https://youtube.com/shorts/${ytId}` : ytError,
-      body.instagramEnabled ? (igId ? "Instagram: published" : `Instagram error: ${igError}`) : null,
-    ].filter(Boolean).join(" · ");
     await supabaseAdmin.from("notifications").insert({
       user_id: body.userId,
-      title: notifTitle,
-      message: `${body.title} — ${notifMsg}`,
+      title: ytId ? "Autopilot uploaded a Short 🚀" : "Autopilot rendered a Short (upload failed)",
+      message: ytId ? `${body.title} — https://youtube.com/shorts/${ytId}` : (ytError || "Rendered but not uploaded"),
     } as never);
 
-    return Response.json({ ok: true, youtubeId: ytId, youtubeError: ytError, instagramId: igId, instagramError: igError });
+    return Response.json({ ok: true, youtubeId: ytId, error: ytError });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await supabaseAdmin.from("videos").update({ status: "failed", error_message: msg, generation_stage: "Autopilot failed" } as never).eq("id", body.videoId);
@@ -123,4 +91,3 @@ async function handler(request: Request): Promise<Response> {
 export const Route = createFileRoute("/api/public/autopilot/upload")({
   server: { handlers: { POST: async ({ request }) => handler(request) } },
 });
-

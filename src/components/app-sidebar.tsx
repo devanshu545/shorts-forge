@@ -1,5 +1,5 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { Home, Wand2, Library, Calendar, Youtube, Instagram, Settings, Zap, LogOut, Rocket } from "lucide-react";
+import { Home, Wand2, Library, Calendar, Youtube, Settings, Zap, LogOut, Rocket } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter, useSidebar,
@@ -14,7 +14,6 @@ const items = [
   { title: "Library", url: "/library", icon: Library },
   { title: "Schedule", url: "/schedule", icon: Calendar },
   { title: "Channel", url: "/channel", icon: Youtube },
-  { title: "Instagram", url: "/instagram", icon: Instagram },
   { title: "Settings", url: "/settings", icon: Settings },
 ] as const;
 

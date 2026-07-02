@@ -41,8 +41,7 @@ import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
-const DEFAULT_SLOT_HOURS = [9, 13, 19];
-const DEFAULT_SLOT_MINUTES = [0, 0, 0];
+const DEFAULT_SLOTS = [9, 13, 19];
 
 function AutopilotPage() {
   const qc = useQueryClient();
@@ -76,8 +75,7 @@ function AutopilotPage() {
   const [form, setForm] = useState({
     enabled: false,
     videos_per_day: 3,
-    slot_hours: DEFAULT_SLOT_HOURS,
-    slot_minutes: DEFAULT_SLOT_MINUTES,
+    slot_hours: DEFAULT_SLOTS,
     topic_mode: "trending" as "trending" | "niche" | "mix",
     niche: "",
     tone: "wholesome and funny",
@@ -85,18 +83,14 @@ function AutopilotPage() {
     voice: "alloy",
     privacy: "public" as "public" | "unlisted" | "private",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-    instagram_enabled: false,
   });
 
   useEffect(() => {
     if (settings) {
-      const hours = (settings.slot_hours as number[] | null) || DEFAULT_SLOT_HOURS;
-      const mins = ((settings as any).slot_minutes as number[] | null) || hours.map(() => 0);
       setForm({
         enabled: settings.enabled,
         videos_per_day: settings.videos_per_day,
-        slot_hours: hours,
-        slot_minutes: mins,
+        slot_hours: settings.slot_hours,
         topic_mode: settings.topic_mode as "trending" | "niche" | "mix",
         niche: settings.niche || "",
         tone: settings.tone,
@@ -104,7 +98,6 @@ function AutopilotPage() {
         voice: settings.voice,
         privacy: settings.privacy as "public" | "unlisted" | "private",
         timezone: settings.timezone,
-        instagram_enabled: Boolean((settings as any).instagram_enabled),
       });
     }
   }, [settings]);
@@ -174,22 +167,11 @@ function AutopilotPage() {
     }
   };
 
-  const setSlotHour = (idx: number, val: number) => {
+  const setSlot = (idx: number, val: number) => {
     const arr = [...form.slot_hours];
     arr[idx] = Math.max(0, Math.min(23, val));
     setForm((f) => ({ ...f, slot_hours: arr }));
   };
-  const setSlotMinute = (idx: number, val: number) => {
-    const arr = [...form.slot_minutes];
-    arr[idx] = Math.max(0, Math.min(59, val));
-    setForm((f) => ({ ...f, slot_minutes: arr }));
-  };
-  const setSlotFromString = (idx: number, val: string) => {
-    const [h, m] = val.split(":").map((n) => Number(n));
-    if (!Number.isNaN(h)) setSlotHour(idx, h);
-    if (!Number.isNaN(m)) setSlotMinute(idx, m);
-  };
-  const fmt2 = (n: number) => String(n).padStart(2, "0");
 
   const testRunning = testStatus === "running";
   const hasReadyTest = !!(testVideo && testVideo.video_url && !testVideo.youtube_video_id);
@@ -219,11 +201,9 @@ function AutopilotPage() {
                 min={1} max={5} step={1}
                 value={[form.videos_per_day]}
                 onValueChange={([v]) => {
-                  const hours = form.slot_hours.slice(0, v);
-                  const mins = form.slot_minutes.slice(0, v);
-                  while (hours.length < v) hours.push(DEFAULT_SLOT_HOURS[hours.length] ?? (12 + hours.length));
-                  while (mins.length < v) mins.push(0);
-                  setForm({ ...form, videos_per_day: v, slot_hours: hours, slot_minutes: mins });
+                  const slots = form.slot_hours.slice(0, v);
+                  while (slots.length < v) slots.push(DEFAULT_SLOTS[slots.length] ?? 12 + slots.length);
+                  setForm({ ...form, videos_per_day: v, slot_hours: slots });
                 }}
                 className="mt-3"
               />
@@ -231,28 +211,14 @@ function AutopilotPage() {
             </div>
 
             <div>
-              <Label>Upload times (HH:MM, your local time)</Label>
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <Label>Upload times (hour of day, your local time)</Label>
+              <div className="mt-2 grid grid-cols-5 gap-2">
                 {Array.from({ length: form.videos_per_day }).map((_, i) => (
-                  <Input
-                    key={i}
-                    type="time"
-                    value={`${fmt2(form.slot_hours[i] ?? 12)}:${fmt2(form.slot_minutes[i] ?? 0)}`}
-                    onChange={(e) => setSlotFromString(i, e.target.value)}
-                  />
+                  <Input key={i} type="number" min={0} max={23} value={form.slot_hours[i] ?? 12} onChange={(e) => setSlot(i, Number(e.target.value))} />
                 ))}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Cron runs every 15 min and fires the slot within ±7 min.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Best Shorts times: 9, 13, 19.</p>
             </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
-              <div>
-                <Label>Also post to Instagram Reels</Label>
-                <p className="text-xs text-muted-foreground">Cross-posts every upload to your connected IG Business account.</p>
-              </div>
-              <Switch checked={form.instagram_enabled} onCheckedChange={(v) => setForm({ ...form, instagram_enabled: v })} />
-            </div>
-
 
             <div>
               <Label>Timezone</Label>

@@ -75,11 +75,9 @@ export type Database = {
           character_key: string
           created_at: string
           enabled: boolean
-          instagram_enabled: boolean
           niche: string | null
           privacy: string
           slot_hours: number[]
-          slot_minutes: number[] | null
           timezone: string
           tone: string
           topic_mode: string
@@ -92,11 +90,9 @@ export type Database = {
           character_key?: string
           created_at?: string
           enabled?: boolean
-          instagram_enabled?: boolean
           niche?: string | null
           privacy?: string
           slot_hours?: number[]
-          slot_minutes?: number[] | null
           timezone?: string
           tone?: string
           topic_mode?: string
@@ -109,11 +105,9 @@ export type Database = {
           character_key?: string
           created_at?: string
           enabled?: boolean
-          instagram_enabled?: boolean
           niche?: string | null
           privacy?: string
           slot_hours?: number[]
-          slot_minutes?: number[] | null
           timezone?: string
           tone?: string
           topic_mode?: string
@@ -121,48 +115,6 @@ export type Database = {
           user_id?: string
           videos_per_day?: number
           voice?: string
-        }
-        Relationships: []
-      }
-      instagram_connections: {
-        Row: {
-          created_at: string
-          fb_page_id: string | null
-          followers_count: number | null
-          id: string
-          ig_business_account_id: string
-          media_count: number | null
-          page_access_token: string
-          token_expires_at: string | null
-          updated_at: string
-          user_id: string
-          username: string | null
-        }
-        Insert: {
-          created_at?: string
-          fb_page_id?: string | null
-          followers_count?: number | null
-          id?: string
-          ig_business_account_id: string
-          media_count?: number | null
-          page_access_token: string
-          token_expires_at?: string | null
-          updated_at?: string
-          user_id: string
-          username?: string | null
-        }
-        Update: {
-          created_at?: string
-          fb_page_id?: string | null
-          followers_count?: number | null
-          id?: string
-          ig_business_account_id?: string
-          media_count?: number | null
-          page_access_token?: string
-          token_expires_at?: string | null
-          updated_at?: string
-          user_id?: string
-          username?: string | null
         }
         Relationships: []
       }
@@ -285,11 +237,6 @@ export type Database = {
           generation_stage: string | null
           hashtags: string[] | null
           id: string
-          ig_caption: string | null
-          ig_hashtags: string[] | null
-          instagram_error: string | null
-          instagram_media_id: string | null
-          instagram_permalink: string | null
           metadata_options: Json
           scheduled_for: string | null
           script: Json | null
@@ -319,11 +266,6 @@ export type Database = {
           generation_stage?: string | null
           hashtags?: string[] | null
           id?: string
-          ig_caption?: string | null
-          ig_hashtags?: string[] | null
-          instagram_error?: string | null
-          instagram_media_id?: string | null
-          instagram_permalink?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
@@ -353,11 +295,6 @@ export type Database = {
           generation_stage?: string | null
           hashtags?: string[] | null
           id?: string
-          ig_caption?: string | null
-          ig_hashtags?: string[] | null
-          instagram_error?: string | null
-          instagram_media_id?: string | null
-          instagram_permalink?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
