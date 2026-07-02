@@ -217,6 +217,14 @@ async function falKlingImageToVideo(opts: {
   );
   if (!submit.ok) {
     const text = await submit.text();
+    if (submit.status === 403 && /balance|locked|exhaust/i.test(text)) {
+      throw new Error(
+        "fal.ai balance is empty. Top up at https://fal.ai/dashboard/billing (minimum $5) then try again.",
+      );
+    }
+    if (submit.status === 401) {
+      throw new Error("fal.ai key rejected. Check the FAL_KEY secret is a valid key from fal.ai/dashboard/keys.");
+    }
     throw new Error(`fal submit failed (${submit.status}): ${text.slice(0, 300)}`);
   }
   const submitted = (await submit.json()) as {
