@@ -4,7 +4,6 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   planCharacterShort,
   generateSceneKeyframe,
-  generateSceneClip,
   finalizeCharacterShort,
   failCharacterShort,
   CHARACTERS,
@@ -39,7 +38,6 @@ function GeneratePage() {
   const plan = useServerFn(planCharacterShort);
   const save = useServerFn(saveScriptAsDraft);
   const keyframe = useServerFn(generateSceneKeyframe);
-  const clip = useServerFn(generateSceneClip);
   const finalize = useServerFn(finalizeCharacterShort);
   const fail = useServerFn(failCharacterShort);
   const genMeta = useServerFn(generateMetadataForVideo);
@@ -115,11 +113,11 @@ function GeneratePage() {
       videoId = draft.id;
       setVideoRow({ id: draft.id, title: planned.title, description: planned.description });
 
-      // 3. Per-scene keyframe + clip
+      // 3. Per-scene keyframe (Pollinations — free, no key)
       const stitchInput: { url: string; order: number }[] = [];
       for (const beat of planned.scenes) {
         setScenes((prev) => prev.map((s) => (s.order === beat.order ? { ...s, status: "keyframe" } : s)));
-        setStage(`Scene ${beat.order} — creating keyframe…`);
+        setStage(`Scene ${beat.order} — painting keyframe (free AI)…`);
         setProgress(10 + (beat.order - 1) * 12);
         const kf = await keyframe({
           data: {
@@ -131,23 +129,9 @@ function GeneratePage() {
             cameraShot: beat.cameraShot,
           },
         });
+        stitchInput.push({ url: kf.url, order: beat.order });
         setScenes((prev) =>
-          prev.map((s) => (s.order === beat.order ? { ...s, thumbUrl: kf.url, status: "video" } : s)),
-        );
-        setStage(`Scene ${beat.order} — animating (this scene ~1 minute)…`);
-        setProgress(14 + (beat.order - 1) * 12);
-        const cl = await clip({
-          data: {
-            videoId: draft.id,
-            sceneOrder: beat.order,
-            imageUrl: kf.url,
-            prompt: `${character}. ${beat.action}. ${beat.mood}. Cinematic Pixar-quality animation, smooth motion, vertical 9:16.`,
-            durationSeconds: 5,
-          },
-        });
-        stitchInput.push({ url: cl.url, order: beat.order });
-        setScenes((prev) =>
-          prev.map((s) => (s.order === beat.order ? { ...s, clipUrl: cl.url, status: "done" } : s)),
+          prev.map((s) => (s.order === beat.order ? { ...s, thumbUrl: kf.url, clipUrl: kf.url, status: "done" } : s)),
         );
       }
 
@@ -279,7 +263,7 @@ function GeneratePage() {
             {busy ? "Generating…" : "Generate short (~4 min)"}
           </Button>
           <p className="text-xs text-muted-foreground">
-            Uses Lovable AI (script + keyframes) + fal.ai Kling (image-to-video). ~$0.20 of fal credit per short. Keep this tab open while it renders.
+            100% free pipeline: Lovable AI writes the plan, Pollinations paints 4 Pixar-style keyframes, your browser animates them with Ken Burns motion + a SUBSCRIBE overlay. Keep this tab open while it renders.
           </p>
         </div>
       </Card>
