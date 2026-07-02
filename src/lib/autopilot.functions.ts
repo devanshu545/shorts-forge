@@ -211,7 +211,7 @@ export const getAutopilotHealth = createServerFn({ method: "GET" })
       : null;
 
     const upcomingSlots = settings?.enabled
-      ? computeUpcomingSlots(settings.slot_hours || [], settings.timezone || "UTC", 3)
+      ? computeUpcomingSlots(settings.slot_hours || [], (settings as any).slot_minutes || [], settings.timezone || "UTC", 3)
       : [];
 
     const ytConnected = Boolean(ytRes.data && String(ytRes.data.scope || "").includes("youtube.upload"));
