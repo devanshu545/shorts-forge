@@ -635,7 +635,7 @@ function AutopilotPage() {
             <li>1. Connect your GitHub repo to this project (Plus menu → GitHub).</li>
             <li>2. In GitHub → Settings → Secrets → Actions, add only <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL). The workflow now authenticates itself automatically.</li>
             <li>3. For testing: click Test Flow here first, then run the GitHub workflow with <code className="rounded bg-muted px-1">force_test=true</code>. It uploads that ready preview video only.</li>
-            <li>4. For automation: turn on Autopilot and hit Apply. The workflow runs hourly and renders + uploads any Shorts whose scheduled slot just passed.</li>
+            <li>4. For automation: turn on Autopilot and hit Apply. The workflow runs every 5 minutes and renders + uploads any Shorts whose scheduled time just arrived (±5 min).</li>
           </ol>
         </Card>
 
