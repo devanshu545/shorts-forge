@@ -41,7 +41,8 @@ import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
-const DEFAULT_SLOTS = [9, 13, 19];
+const DEFAULT_SLOT_HOURS = [9, 13, 19];
+const DEFAULT_SLOT_MINUTES = [0, 0, 0];
 
 function AutopilotPage() {
   const qc = useQueryClient();
@@ -75,7 +76,8 @@ function AutopilotPage() {
   const [form, setForm] = useState({
     enabled: false,
     videos_per_day: 3,
-    slot_hours: DEFAULT_SLOTS,
+    slot_hours: DEFAULT_SLOT_HOURS,
+    slot_minutes: DEFAULT_SLOT_MINUTES,
     topic_mode: "trending" as "trending" | "niche" | "mix",
     niche: "",
     tone: "wholesome and funny",
@@ -83,14 +85,18 @@ function AutopilotPage() {
     voice: "alloy",
     privacy: "public" as "public" | "unlisted" | "private",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    instagram_enabled: false,
   });
 
   useEffect(() => {
     if (settings) {
+      const hours = (settings.slot_hours as number[] | null) || DEFAULT_SLOT_HOURS;
+      const mins = ((settings as any).slot_minutes as number[] | null) || hours.map(() => 0);
       setForm({
         enabled: settings.enabled,
         videos_per_day: settings.videos_per_day,
-        slot_hours: settings.slot_hours,
+        slot_hours: hours,
+        slot_minutes: mins,
         topic_mode: settings.topic_mode as "trending" | "niche" | "mix",
         niche: settings.niche || "",
         tone: settings.tone,
@@ -98,6 +104,7 @@ function AutopilotPage() {
         voice: settings.voice,
         privacy: settings.privacy as "public" | "unlisted" | "private",
         timezone: settings.timezone,
+        instagram_enabled: Boolean((settings as any).instagram_enabled),
       });
     }
   }, [settings]);
