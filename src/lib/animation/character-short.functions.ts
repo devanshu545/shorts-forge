@@ -68,22 +68,27 @@ const EmotionField = z.preprocess((v) => {
   return "happy";
 }, z.string().max(40));
 
+const ShortText = (max: number) => z.preprocess((v) => {
+  const text = typeof v === "string" ? v.trim() : String(v ?? "");
+  return text.length > max ? text.slice(0, max).trim() : text;
+}, z.string().max(max));
+
 const SceneBeatSchema = z.object({
   order: z.number().int().min(1).max(4),
-  setting: z.string().max(200),
-  action: z.string().max(200),
-  cameraShot: z.string().max(120),
-  mood: z.string().max(60),
+  setting: ShortText(200),
+  action: ShortText(200),
+  cameraShot: ShortText(120),
+  mood: ShortText(60),
   emotion: EmotionField,
-  voiceover: z.string().min(3).max(220),
+  voiceover: ShortText(220).pipe(z.string().min(3)),
   durationSeconds: z.union([z.literal(5), z.literal(5)]).default(5),
 });
 
 
 export const CharacterPlanSchema = z.object({
-  title: z.string().max(80),
-  hook: z.string().max(120),
-  description: z.string().max(400),
+  title: ShortText(80),
+  hook: ShortText(120),
+  description: ShortText(400),
   hashtags: z.array(z.string()).min(3).max(12),
   scenes: z.array(SceneBeatSchema).length(4),
   cta: z.object({

@@ -52,16 +52,26 @@ STRICT WRITING RULES for voiceover text:
 
 async function fetchPollinationsBase64(prompt: string, seed: number): Promise<string> {
   const encoded = encodeURIComponent(prompt.slice(0, 900));
-  const url = `https://image.pollinations.ai/prompt/${encoded}?width=720&height=1280&nologo=true&enhance=true&model=flux&seed=${seed}`;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const variants = [
+    `width=720&height=1280&nologo=true&enhance=true&model=flux&seed=${seed}`,
+    `width=720&height=1280&nologo=true&model=flux&seed=${seed + 7}`,
+    `width=512&height=896&nologo=true&enhance=true&model=flux&seed=${seed + 17}`,
+  ];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45000);
     try {
-      const res = await fetch(url, { headers: { Accept: "image/*" } });
+      const url = `https://image.pollinations.ai/prompt/${encoded}?${variants[attempt % variants.length]}`;
+      const res = await fetch(url, { headers: { Accept: "image/*" }, signal: controller.signal });
+      clearTimeout(timeout);
       if (res.ok) {
         const buf = new Uint8Array(await res.arrayBuffer());
         if (buf.byteLength > 2000) return Buffer.from(buf).toString("base64");
       }
-    } catch {}
-    await new Promise((r) => setTimeout(r, 1200 + attempt * 1200));
+    } catch {
+      clearTimeout(timeout);
+    }
+    await new Promise((r) => setTimeout(r, 2500 + attempt * 1500));
   }
   throw new Error("Pollinations image failed");
 }
@@ -100,9 +110,9 @@ function isSlotDue(slotHours: number[], timezone: string): number | null {
 }
 
 async function handler(request: Request): Promise<Response> {
-  const secret = process.env.AUTOPILOT_SECRET;
+  const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
   const provided = request.headers.get("x-autopilot-secret") || new URL(request.url).searchParams.get("secret");
-  if (!secret || provided !== secret) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  if (!provided || !secrets.includes(provided)) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 3);
@@ -155,6 +165,7 @@ async function handler(request: Request): Promise<Response> {
     }
 
 
+    let reservedId: string | null = null;
     try {
       // Pick topic
       let storyPrompt: string;
@@ -189,18 +200,21 @@ async function handler(request: Request): Promise<Response> {
         .select("id")
         .single();
       if (insErr) throw new Error(insErr.message);
+      reservedId = reserved.id;
 
-      // Render assets in parallel: 4 keyframes + 4 audio
-      const kfPromises = plan.scenes.map((sc) => {
+      // Generate free keyframes first; only spend TTS credits after images succeed.
+      const images: string[] = [];
+      for (const sc of plan.scenes) {
         const hint = EMOTION_HINTS[String(sc.emotion).toLowerCase()] ?? "expressive face";
         const prompt = `${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. ${sc.action}. Scene: ${sc.setting}. ${sc.cameraShot}. Cinematic 3D Pixar-quality, vertical 9:16, soft rim lighting, single subject only, no text, no watermark.`;
-        return fetchPollinationsBase64(prompt, 1000 + sc.order * 137);
-      });
-      const audioPromises = plan.scenes.map((sc) => generateTtsBase64(sc.voiceover, s.voice));
-      const [images, audios] = await Promise.all([Promise.all(kfPromises), Promise.all(audioPromises)]);
+        images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137));
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      const audios: string[] = [];
+      for (const sc of plan.scenes) audios.push(await generateTtsBase64(sc.voiceover, s.voice));
 
       jobs.push({
-        videoId: reserved.id,
+        videoId: reservedId,
         userId: s.user_id,
         slotISO,
         privacy: s.privacy,
@@ -213,6 +227,15 @@ async function handler(request: Request): Promise<Response> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push({ userId: s.user_id, message: msg.slice(0, 500) });
+      if (reservedId) {
+        try {
+          await supabaseAdmin.from("videos").update({
+            status: "failed",
+            error_message: msg.slice(0, 500),
+            generation_stage: "Autopilot failed before rendering",
+          } as never).eq("id", reservedId);
+        } catch {}
+      }
       try {
         await supabaseAdmin.from("notifications").insert({
           user_id: s.user_id,
