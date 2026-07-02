@@ -79,8 +79,9 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const SettingsSchema = z.object({
   enabled: z.boolean().default(false),
   videos_per_day: z.number().int().min(1).max(8).default(3),
-  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(8),
+  slot_hours: z.array(z.number().int().min(0).max(23)).max(24).optional(),
   slot_times: z.array(z.string().regex(TIME_RE)).min(1).max(8).default(["09:00","13:00","19:00"]),
+
   pause_days: z.array(z.number().int().min(0).max(6)).max(7).default([]),
   characters_pool: z.array(z.string().min(1).max(60)).max(10).default([]),
   voices_pool: z.array(z.string().min(1).max(20)).max(10).default([]),
