@@ -93,18 +93,26 @@ async function generateTtsBase64(text: string, voice: string): Promise<string> {
   return Buffer.from(await res.arrayBuffer()).toString("base64");
 }
 
-function currentSlotKey(hour: number) {
+function currentSlotKey(hour: number, minute: number) {
   const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}${String(minute).padStart(2, "0")}`;
 }
 
-function isSlotDue(slotHours: number[], timezone: string): number | null {
-  // Compute current hour in user's timezone; if it matches a slot, return that hour (UTC-marked as slot key).
+// Returns { utcHour, utcMinute } of the due slot (matching within ±7min window), else null.
+function isSlotDue(slotHours: number[], slotMinutes: number[], timezone: string): { utcHour: number; utcMinute: number } | null {
   try {
     const now = new Date();
-    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, timeZone: timezone });
-    const localHour = Number(fmt.format(now));
-    if (slotHours.includes(localHour)) return now.getUTCHours();
+    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone });
+    const parts = fmt.formatToParts(now);
+    const localHour = Number(parts.find((p) => p.type === "hour")?.value ?? "00");
+    const localMinute = Number(parts.find((p) => p.type === "minute")?.value ?? "00");
+    for (let i = 0; i < slotHours.length; i++) {
+      const h = slotHours[i];
+      const m = slotMinutes[i] ?? 0;
+      if (h !== localHour) continue;
+      // Match within a 7-minute window since GitHub cron runs every 15 min.
+      if (Math.abs(localMinute - m) <= 7) return { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() };
+    }
   } catch {}
   return null;
 }
@@ -128,14 +136,19 @@ async function handler(request: Request): Promise<Response> {
 
   // Preview: what slots are due right now for each enabled user.
   const preview = (users || []).map((s) => {
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
+    const now = new Date();
+    const due = force
+      ? { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() }
+      : isSlotDue(s.slot_hours, (s as any).slot_minutes || [], s.timezone);
     return {
       userId: s.user_id,
       enabled: s.enabled,
       timezone: s.timezone,
       slotHours: s.slot_hours,
-      dueUtcHour: utcHour,
-      isDue: utcHour !== null,
+      slotMinutes: (s as any).slot_minutes || [],
+      dueUtcHour: due?.utcHour ?? null,
+      dueUtcMinute: due?.utcMinute ?? null,
+      isDue: due !== null,
     };
   });
 
@@ -161,8 +174,11 @@ async function handler(request: Request): Promise<Response> {
   const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
   for (const s of users || []) {
     if (jobs.length >= limit) break;
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
-    if (utcHour === null) continue;
+    const now = new Date();
+    const due = force
+      ? { utcHour: now.getUTCHours(), utcMinute: now.getUTCMinutes() }
+      : isSlotDue(s.slot_hours, (s as any).slot_minutes || [], s.timezone);
+    if (!due) continue;
 
     // Preflight: don't burn AI credits if YouTube isn't connected/usable.
     try {
@@ -180,10 +196,10 @@ async function handler(request: Request): Promise<Response> {
       continue;
     }
 
-    const slotKey = currentSlotKey(utcHour);
+    const slotKey = currentSlotKey(due.utcHour, due.utcMinute);
     const slotISO = force
       ? new Date().toISOString()
-      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
+      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11, 13)}:${slotKey.slice(13, 15)}:00Z`).toISOString();
 
 
     if (!force) {
@@ -233,6 +249,26 @@ async function handler(request: Request): Promise<Response> {
       const blendedTone = `${s.tone} | GENRE THIS TIME: ${genre.key.toUpperCase()} — ${genre.brief}. Make the entire story fit this genre.`;
       const plan = await planStory(blendedTone, characterDesc, storyPrompt);
 
+      // Instagram gets its OWN caption/hashtags: longer, storytelling, up to 30 hashtags, with @follow CTA.
+      // Deterministic + cheap: derive from the plan rather than a second LLM call.
+      const igCaption = [
+        (plan.hook || plan.title || "").trim(),
+        "",
+        (plan.description || "").trim(),
+        "",
+        "💛 Save this and follow @craftwebstudioo for a new story every day.",
+        "👇 Which part hit you the hardest? Tell us in the comments.",
+      ].filter(Boolean).join("\n").slice(0, 2000);
+      const igHashtagPool = Array.from(new Set([
+        ...(plan.hashtags || []).map((h) => h.replace(/^#/, "")),
+        "reels", "reelsinstagram", "reelsviral", "reelsindia",
+        "storytime", "animation", "3danimation", "pixarstyle",
+        "shortstory", "viral", "explore", "explorepage",
+        "trending", "trendingreels", "instagood", "instadaily",
+        "cute", "wholesome", "funny", "emotional",
+        "craftwebstudioo", "shorts", "animatedstory", "storiesofinstagram",
+      ])).filter(Boolean).slice(0, 30);
+
       // Reserve slot immediately (so a retry does not double-render)
       const { data: reserved, error: insErr } = await supabaseAdmin
         .from("videos")
@@ -241,6 +277,8 @@ async function handler(request: Request): Promise<Response> {
           title: plan.title,
           description: plan.description,
           hashtags: plan.hashtags,
+          ig_caption: igCaption,
+          ig_hashtags: igHashtagPool,
           status: "generating_video",
           generation_progress: 20,
           generation_stage: "Autopilot: generating assets",
@@ -271,6 +309,9 @@ async function handler(request: Request): Promise<Response> {
         plan,
         rawTopic,
         source,
+        instagramEnabled: Boolean((s as any).instagram_enabled),
+        igCaption,
+        igHashtags: igHashtagPool,
         images, // base64 jpg each
         audios, // base64 mp3 each
       });

@@ -77,8 +77,9 @@ export const runAutopilotTestNow = createServerFn({ method: "POST" })
 
 const SettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  videos_per_day: z.number().int().min(1).max(5).default(3),
-  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(5),
+  videos_per_day: z.number().int().min(1).max(10).default(3),
+  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(10),
+  slot_minutes: z.array(z.number().int().min(0).max(59)).min(1).max(10).default([0]),
   topic_mode: z.enum(["trending", "niche", "mix"]).default("trending"),
   niche: z.string().max(400).nullable().optional(),
   tone: z.string().min(2).max(80).default("wholesome and funny"),
@@ -86,6 +87,7 @@ const SettingsSchema = z.object({
   voice: z.string().min(2).max(20).default("alloy"),
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
   timezone: z.string().min(1).max(80).default("UTC"),
+  instagram_enabled: z.boolean().default(false),
 });
 
 export const getAutopilotSettings = createServerFn({ method: "GET" })
@@ -104,10 +106,14 @@ export const saveAutopilotSettings = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => SettingsSchema.parse(raw))
   .handler(async ({ data, context }) => {
+    // Normalize slot_minutes to match slot_hours length.
+    const minutes = [...data.slot_minutes];
+    while (minutes.length < data.videos_per_day) minutes.push(0);
     const row = {
       user_id: context.userId,
       ...data,
       slot_hours: data.slot_hours.slice(0, data.videos_per_day),
+      slot_minutes: minutes.slice(0, data.videos_per_day),
       updated_at: new Date().toISOString(),
     };
     const { data: saved, error } = await context.supabase
@@ -133,25 +139,24 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     return data;
   });
 
-function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3): string[] {
+function computeUpcomingSlots(slotHours: number[], slotMinutes: number[], timezone: string, count = 3): string[] {
   const out: string[] = [];
   const now = new Date();
+  const pairs = slotHours.map((h, i) => ({ h, m: slotMinutes[i] ?? 0 }))
+    .sort((a, b) => a.h - b.h || a.m - b.m);
   for (let dayOffset = 0; dayOffset < 3 && out.length < count; dayOffset += 1) {
     const day = new Date(now.getTime() + dayOffset * 86400_000);
-    for (const h of [...slotHours].sort((a, b) => a - b)) {
-      // Build a Date that represents "today at hour h in the user's tz".
-      // Approximation: format now in tz to get local Y-M-D, then use UTC offset diff.
+    for (const { h, m } of pairs) {
       try {
         const local = new Intl.DateTimeFormat("en-CA", {
           timeZone: timezone,
           year: "numeric", month: "2-digit", day: "2-digit",
         }).formatToParts(day);
         const y = local.find((p) => p.type === "year")?.value;
-        const m = local.find((p) => p.type === "month")?.value;
+        const mo = local.find((p) => p.type === "month")?.value;
         const d = local.find((p) => p.type === "day")?.value;
-        if (!y || !m || !d) continue;
-        // Convert wall-clock local time to UTC via a probe date.
-        const probe = new Date(`${y}-${m}-${d}T${String(h).padStart(2, "0")}:00:00Z`);
+        if (!y || !mo || !d) continue;
+        const probe = new Date(`${y}-${mo}-${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`);
         const tzOffsetMinutes = (() => {
           const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
           const localHour = Number(dtf.format(probe));
@@ -206,7 +211,7 @@ export const getAutopilotHealth = createServerFn({ method: "GET" })
       : null;
 
     const upcomingSlots = settings?.enabled
-      ? computeUpcomingSlots(settings.slot_hours || [], settings.timezone || "UTC", 3)
+      ? computeUpcomingSlots(settings.slot_hours || [], (settings as any).slot_minutes || [], settings.timezone || "UTC", 3)
       : [];
 
     const ytConnected = Boolean(ytRes.data && String(ytRes.data.scope || "").includes("youtube.upload"));
