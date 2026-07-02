@@ -62,16 +62,23 @@ const PlanInputSchema = z.object({
   tone: z.string().min(2).max(60).default("wholesome"),
 });
 
+const EmotionField = z.preprocess((v) => {
+  if (Array.isArray(v)) return typeof v[0] === "string" ? v[0] : "happy";
+  if (typeof v === "string" && v.trim()) return v.trim();
+  return "happy";
+}, z.string().max(40));
+
 const SceneBeatSchema = z.object({
   order: z.number().int().min(1).max(4),
   setting: z.string().max(200),
   action: z.string().max(200),
   cameraShot: z.string().max(120),
   mood: z.string().max(60),
-  emotion: z.string().max(40).default("happy"),
+  emotion: EmotionField,
   voiceover: z.string().min(3).max(220),
   durationSeconds: z.union([z.literal(5), z.literal(5)]).default(5),
 });
+
 
 export const CharacterPlanSchema = z.object({
   title: z.string().max(80),
