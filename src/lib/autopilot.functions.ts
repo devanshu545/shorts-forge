@@ -132,3 +132,94 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
     return data;
   });
+
+function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3): string[] {
+  const out: string[] = [];
+  const now = new Date();
+  for (let dayOffset = 0; dayOffset < 3 && out.length < count; dayOffset += 1) {
+    const day = new Date(now.getTime() + dayOffset * 86400_000);
+    for (const h of [...slotHours].sort((a, b) => a - b)) {
+      // Build a Date that represents "today at hour h in the user's tz".
+      // Approximation: format now in tz to get local Y-M-D, then use UTC offset diff.
+      try {
+        const local = new Intl.DateTimeFormat("en-CA", {
+          timeZone: timezone,
+          year: "numeric", month: "2-digit", day: "2-digit",
+        }).formatToParts(day);
+        const y = local.find((p) => p.type === "year")?.value;
+        const m = local.find((p) => p.type === "month")?.value;
+        const d = local.find((p) => p.type === "day")?.value;
+        if (!y || !m || !d) continue;
+        // Convert wall-clock local time to UTC via a probe date.
+        const probe = new Date(`${y}-${m}-${d}T${String(h).padStart(2, "0")}:00:00Z`);
+        const tzOffsetMinutes = (() => {
+          const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
+          const localHour = Number(dtf.format(probe));
+          const utcHour = probe.getUTCHours();
+          return (localHour - utcHour) * 60;
+        })();
+        const slotUtcMs = probe.getTime() - tzOffsetMinutes * 60_000;
+        if (slotUtcMs > now.getTime() - 60_000) {
+          out.push(new Date(slotUtcMs).toISOString());
+          if (out.length >= count) break;
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  return out;
+}
+
+export const getAutopilotHealth = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const [settingsRes, recentRes, uploadedRes, notifRes, heartbeatRes, ytRes] = await Promise.all([
+      context.supabase.from("autopilot_settings").select("*").eq("user_id", context.userId).maybeSingle(),
+      context.supabase.from("videos")
+        .select("id,title,status,error_message,autopilot_slot,youtube_video_id,created_at")
+        .eq("user_id", context.userId)
+        .not("autopilot_slot", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(5),
+      context.supabase.from("videos")
+        .select("id,title,youtube_video_id,created_at")
+        .eq("user_id", context.userId)
+        .not("youtube_video_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      context.supabase.from("notifications")
+        .select("title,message,created_at")
+        .eq("user_id", context.userId)
+        .order("created_at", { ascending: false })
+        .limit(5),
+      context.supabase.from("autopilot_heartbeats").select("*").eq("source", "github").maybeSingle(),
+      context.supabase.from("youtube_connections").select("scope,channel_title,updated_at").eq("user_id", context.userId).maybeSingle(),
+    ]);
+
+    const settings = settingsRes.data;
+    const heartbeat = heartbeatRes.data;
+    const heartbeatAgeMinutes = heartbeat?.last_ping
+      ? Math.round((Date.now() - new Date(heartbeat.last_ping).getTime()) / 60_000)
+      : null;
+
+    const upcomingSlots = settings?.enabled
+      ? computeUpcomingSlots(settings.slot_hours || [], settings.timezone || "UTC", 3)
+      : [];
+
+    const ytConnected = Boolean(ytRes.data && String(ytRes.data.scope || "").includes("youtube.upload"));
+
+    return {
+      settings,
+      heartbeat: heartbeat
+        ? { lastPing: heartbeat.last_ping, ageMinutes: heartbeatAgeMinutes, stale: (heartbeatAgeMinutes ?? 9999) > 130 }
+        : { lastPing: null, ageMinutes: null, stale: true },
+      upcomingSlots,
+      recentRuns: recentRes.data ?? [],
+      lastUpload: uploadedRes.data ?? null,
+      notifications: notifRes.data ?? [],
+      youtube: {
+        connected: ytConnected,
+        channelTitle: ytRes.data?.channel_title ?? null,
+      },
+    };
+  });
