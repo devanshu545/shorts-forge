@@ -68,6 +68,22 @@ function AutopilotPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const testMut = useMutation({
+    mutationFn: () => testFn({ data: { baseUrl: window.location.origin } }),
+    onSuccess: (res) => {
+      const n = res?.jobs?.length ?? 0;
+      if (n === 0) {
+        toast.error("Test tick returned 0 jobs. Check that Autopilot is enabled and secrets are set.");
+      } else {
+        const title = res.jobs[0]?.plan?.title ?? "(untitled)";
+        toast.success(`Queued ${n} test job: "${title}". GitHub Actions will render + upload on the next hourly run (or trigger it manually in Actions).`);
+        qc.invalidateQueries({ queryKey: ["autopilot-videos"] });
+      }
+    },
+    onError: (e: Error) => toast.error(`Test failed: ${e.message}`),
+  });
+
+
   const setSlot = (idx: number, val: number) => {
     const arr = [...form.slot_hours];
     arr[idx] = Math.max(0, Math.min(23, val));
