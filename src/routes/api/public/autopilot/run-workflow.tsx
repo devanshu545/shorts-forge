@@ -6,7 +6,7 @@ const BodySchema = z.object({
   userId: z.string().uuid().optional(),
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
   onlyAutopilot: z.boolean().default(false),
-}).default({ privacy: "public" });
+}).default({ privacy: "public", onlyAutopilot: false });
 
 async function parseBody(request: Request) {
   try {
