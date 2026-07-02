@@ -36,17 +36,18 @@ export type PipelineCallbacks = {
 
 export type PipelineResult = { videoId: string; videoRow: any };
 
-type ServerFn<TInput, TOutput> = (opts: { data: TInput }) => Promise<TOutput>;
+type AnyServerFn<TOutput = unknown> = (opts: { data: any }) => Promise<TOutput>;
 
 export type PipelineServerFns = {
-  plan: ServerFn<Parameters<typeof planCharacterShort>[0]["data"], { plan: CharacterPlan }>;
-  save: ServerFn<Parameters<typeof saveScriptAsDraft>[0]["data"], { id: string }>;
-  keyframe: ServerFn<Parameters<typeof generateSceneKeyframe>[0]["data"], { url: string }>;
-  voiceover: ServerFn<Parameters<typeof generateSceneVoiceover>[0]["data"], { url: string }>;
-  finalize: ServerFn<Parameters<typeof finalizeCharacterShort>[0]["data"], unknown>;
-  fail: ServerFn<Parameters<typeof failCharacterShort>[0]["data"], unknown>;
-  genMeta: ServerFn<Parameters<typeof generateMetadataForVideo>[0]["data"], unknown>;
+  plan: AnyServerFn<{ plan: CharacterPlan }>;
+  save: AnyServerFn<{ id: string }>;
+  keyframe: AnyServerFn<{ url: string }>;
+  voiceover: AnyServerFn<{ url: string }>;
+  finalize: AnyServerFn;
+  fail: AnyServerFn;
+  genMeta: AnyServerFn;
 };
+
 
 export async function runCharacterShortPipeline(
   input: PipelineInput,
