@@ -4,11 +4,14 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   planCharacterShort,
   generateSceneKeyframe,
+  generateSceneVoiceover,
   finalizeCharacterShort,
   failCharacterShort,
   CHARACTERS,
+  VOICES,
   type CharacterKey,
   type CharacterPlan,
+  type VoiceKey,
 } from "@/lib/animation/character-short.functions";
 import { saveScriptAsDraft } from "@/lib/scripts.functions";
 import { generateMetadataForVideo } from "@/lib/media.functions";
@@ -38,6 +41,7 @@ function GeneratePage() {
   const plan = useServerFn(planCharacterShort);
   const save = useServerFn(saveScriptAsDraft);
   const keyframe = useServerFn(generateSceneKeyframe);
+  const voiceover = useServerFn(generateSceneVoiceover);
   const finalize = useServerFn(finalizeCharacterShort);
   const fail = useServerFn(failCharacterShort);
   const genMeta = useServerFn(generateMetadataForVideo);
@@ -46,6 +50,7 @@ function GeneratePage() {
   const [customCharacter, setCustomCharacter] = useState("");
   const [topic, setTopic] = useState("goes fishing at a sunny pond, catches a fish, brings it home and cooks it");
   const [tone, setTone] = useState<(typeof TONES)[number]>("wholesome");
+  const [voice, setVoice] = useState<VoiceKey>("alloy");
 
   const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [stage, setStage] = useState("");
@@ -99,25 +104,37 @@ function GeneratePage() {
         hook: planned.hook,
         scenes: planned.scenes.map((s) => ({
           order: s.order,
-          visualPrompt: `${s.setting}. ${s.action}. ${s.cameraShot}. ${s.mood}.`,
-          voiceover: "",
+          visualPrompt: `${s.setting}. ${s.action}. ${s.cameraShot}. ${s.mood}. (${s.emotion})`,
+          voiceover: s.voiceover,
           onScreenText: "",
           durationSeconds: s.durationSeconds,
         })),
-        fullVoiceover: "",
+        fullVoiceover: planned.scenes.map((s) => s.voiceover).join(" "),
         description: planned.description,
         hashtags: planned.hashtags,
         seoKeywords: planned.hashtags.map((h) => h.replace(/^#/, "").toLowerCase()),
       };
-      const draft = await save({ data: { script: scriptPayload, durationSeconds: 20 } });
+      const draft = await save({ data: { script: scriptPayload, durationSeconds: 22 } });
       videoId = draft.id;
       setVideoRow({ id: draft.id, title: planned.title, description: planned.description });
 
-      // 3. Per-scene keyframe (Pollinations — free, no key)
-      const stitchInput: { url: string; order: number }[] = [];
+      // Prime scene tiles with the emotion labels
+      setScenes(
+        planned.scenes.map((b) => ({
+          order: b.order,
+          label: `Scene ${b.order}`,
+          status: "pending",
+          emotion: b.emotion,
+        })),
+      );
+
+      // 3. Per-scene keyframe (Pollinations — free) + voiceover (Lovable AI TTS)
+      const stitchInput: { imageUrl: string; audioUrl?: string; order: number }[] = [];
+      let ttsWarning: string | null = null;
+
       for (const beat of planned.scenes) {
         setScenes((prev) => prev.map((s) => (s.order === beat.order ? { ...s, status: "keyframe" } : s)));
-        setStage(`Scene ${beat.order} — painting keyframe (free AI)…`);
+        setStage(`Scene ${beat.order} — painting (feeling: ${beat.emotion})…`);
         setProgress(10 + (beat.order - 1) * 12);
         const kf = await keyframe({
           data: {
@@ -127,16 +144,47 @@ function GeneratePage() {
             setting: beat.setting,
             action: beat.action,
             cameraShot: beat.cameraShot,
+            emotion: beat.emotion,
           },
         });
-        stitchInput.push({ url: kf.url, order: beat.order });
         setScenes((prev) =>
-          prev.map((s) => (s.order === beat.order ? { ...s, thumbUrl: kf.url, clipUrl: kf.url, status: "done" } : s)),
+          prev.map((s) => (s.order === beat.order ? { ...s, thumbUrl: kf.url, status: "voiceover" } : s)),
+        );
+
+        // Voiceover — soft-fail so a TTS credit issue doesn't lose the whole video
+        let audioUrl: string | undefined;
+        try {
+          setStage(`Scene ${beat.order} — recording narration…`);
+          setProgress(14 + (beat.order - 1) * 12);
+          const vo = await voiceover({
+            data: {
+              videoId: draft.id,
+              sceneOrder: beat.order,
+              text: beat.voiceover,
+              voice,
+            },
+          });
+          audioUrl = vo.url;
+        } catch (voErr) {
+          if (!ttsWarning) ttsWarning = voErr instanceof Error ? voErr.message : String(voErr);
+        }
+
+        stitchInput.push({ imageUrl: kf.url, audioUrl, order: beat.order });
+        setScenes((prev) =>
+          prev.map((s) =>
+            s.order === beat.order ? { ...s, thumbUrl: kf.url, audioUrl, status: "done" } : s,
+          ),
         );
       }
 
-      // 4. Client-side stitch with CTA overlay
-      setStage("Stitching final video with SUBSCRIBE overlay…");
+      if (ttsWarning) {
+        toast.warning("Narration skipped", {
+          description: `${ttsWarning}. Video will render without voiceover.`,
+        });
+      }
+
+      // 4. Client-side stitch (narration + Ken Burns + persistent SUBSCRIBE + end card)
+      setStage("Stitching narrated video…");
       setProgress(65);
       const { blob, durationSeconds } = await stitchClips({
         scenes: stitchInput,
@@ -185,7 +233,7 @@ function GeneratePage() {
       const message = err instanceof Error ? err.message : "Generation failed";
       setError(message);
       setStatus("failed");
-      setScenes((prev) => prev.map((s) => (s.status === "keyframe" || s.status === "video" ? { ...s, status: "failed" } : s)));
+      setScenes((prev) => prev.map((s) => (s.status === "keyframe" || s.status === "voiceover" ? { ...s, status: "failed" } : s)));
       if (videoId) {
         try {
           await fail({ data: { videoId, message } });
@@ -258,12 +306,28 @@ function GeneratePage() {
             </div>
           </div>
 
+          <div>
+            <Label>Narrator voice</Label>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {VOICES.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setVoice(v)}
+                  className={`rounded-full border px-3 py-1 text-xs capitalize transition-all ${voice === v ? "border-primary bg-primary/15 text-primary-glow" : "border-border/60 bg-surface/40 hover:border-border"}`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <Button onClick={run} className="w-full" disabled={busy}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {busy ? "Generating…" : "Generate short (~4 min)"}
+            {busy ? "Generating…" : "Generate narrated short (~2 min)"}
           </Button>
           <p className="text-xs text-muted-foreground">
-            100% free pipeline: Lovable AI writes the plan, Pollinations paints 4 Pixar-style keyframes, your browser animates them with Ken Burns motion + a SUBSCRIBE overlay. Keep this tab open while it renders.
+            100% free: Lovable AI writes the story + narrates it, Pollinations paints the 4 emotion-matched scenes, your browser mixes it all into a narrated video with a persistent SUBSCRIBE watermark and end card. Keep this tab open while it renders.
           </p>
         </div>
       </Card>
