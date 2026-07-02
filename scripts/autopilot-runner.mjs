@@ -5,9 +5,16 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const BASE = process.env.APP_BASE_URL || "https://project--fef723df-9eae-493f-a28f-e92bb48e32f5.lovable.app";
+const DEFAULT_BASE = "https://devanshuautomation.lovable.app";
+let configuredBase = process.env.APP_BASE_URL || DEFAULT_BASE;
+if (configuredBase.includes("id-preview--")) {
+  console.warn("APP_BASE_URL is a login-protected preview URL. Using the published URL for GitHub automation.");
+  configuredBase = DEFAULT_BASE;
+}
+const BASE = configuredBase.replace(/\/+$/, "");
 const SECRET = process.env.AUTOPILOT_SECRET;
 if (!SECRET) { console.error("AUTOPILOT_SECRET missing"); process.exit(1); }
+const FORCE = process.env.AUTOPILOT_FORCE === "1" || process.argv.includes("--force");
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe", ...opts });
@@ -122,14 +129,22 @@ async function processJob(job) {
       durationSeconds: totalDur,
     }),
   });
-  const json = await uploadRes.json();
+  const uploadText = await uploadRes.text();
+  let json;
+  try { json = JSON.parse(uploadText); }
+  catch { throw new Error(`Upload returned non-JSON (${uploadRes.status}): ${uploadText.slice(0, 500)}`); }
+  if (!uploadRes.ok || json?.ok === false) {
+    throw new Error(`Upload failed (${uploadRes.status}): ${json?.error || uploadText.slice(0, 500)}`);
+  }
   console.log(`[job ${job.videoId}] upload result:`, json);
   rmSync(workDir, { recursive: true, force: true });
 }
 
 async function main() {
   console.log(`Fetching autopilot jobs from ${BASE}...`);
-  const tickRes = await fetch(`${BASE}/api/public/autopilot/tick?limit=5`, {
+  console.log(FORCE ? "Manual test mode: creating one job right now." : "Scheduled mode: checking due upload slots.");
+  const endpoint = `${BASE}/api/public/autopilot/tick?limit=${FORCE ? 1 : 5}${FORCE ? "&force=1" : ""}`;
+  const tickRes = await fetch(endpoint, {
     method: "POST",
     headers: { "x-autopilot-secret": SECRET },
   });
@@ -137,21 +152,34 @@ async function main() {
   if (!tickRes.ok) {
     console.error(`Tick failed HTTP ${tickRes.status}`);
     console.error(`Response body: ${tickText.slice(0, 2000)}`);
+    if (tickRes.status === 401) {
+      console.error("Fix: GitHub AUTOPILOT_SECRET does not match the app secret, or the app secret is missing.");
+    }
+    if (tickText.trim().startsWith("<")) {
+      console.error("Fix: APP_BASE_URL is pointing to the wrong site. Use the published Lovable URL only, with no path.");
+    }
     throw new Error(`Tick failed ${tickRes.status}`);
   }
   let parsed;
   try { parsed = JSON.parse(tickText); }
   catch { console.error("Tick returned non-JSON:", tickText.slice(0, 500)); throw new Error("Tick non-JSON"); }
   const jobs = parsed.jobs || [];
+  const errors = parsed.errors || [];
   console.log(`Got ${jobs.length} jobs`);
+  if (errors.length) console.error("Autopilot tick errors:", JSON.stringify(errors, null, 2));
   if (jobs.length === 0) {
+    if (FORCE) {
+      throw new Error(errors.length ? "Manual test could not create a job. See errors above." : "Manual test found no autopilot settings. Open Autopilot, turn it on, and click Apply.");
+    }
     console.log("No jobs due right now. This is normal if no autopilot slot matches the current hour.");
-    console.log("To force a test job, click 'Test now' on /autopilot in the app, then re-run this workflow.");
+    console.log("For an immediate test, run this workflow manually with force_test=true.");
   }
+  let failed = 0;
   for (const job of jobs) {
     try { await processJob(job); }
-    catch (err) { console.error(`Job ${job.videoId} failed:`, err); }
+    catch (err) { failed += 1; console.error(`Job ${job.videoId} failed:`, err); }
   }
+  if (failed > 0) throw new Error(`${failed}/${jobs.length} autopilot job(s) failed.`);
 }
 
 main().catch((e) => { console.error("FATAL:", e); process.exit(1); });

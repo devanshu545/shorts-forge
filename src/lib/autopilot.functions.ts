@@ -10,13 +10,13 @@ export const runAutopilotTestNow = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const secret = process.env.AUTOPILOT_SECRET;
     if (!secret) throw new Error("AUTOPILOT_SECRET not configured on the server.");
-    const url = `${data.baseUrl.replace(/\/$/, "")}/api/public/autopilot/tick?force=1&user=${context.userId}&limit=1`;
+    const url = `${data.baseUrl.replace(/\/$/, "")}/api/public/autopilot/tick?dryRun=1&user=${context.userId}&limit=1`;
     const res = await fetch(url, { method: "POST", headers: { "x-autopilot-secret": secret } });
     const text = await res.text();
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch {}
     if (!res.ok) throw new Error(typeof parsed === "object" && parsed && "error" in parsed ? String((parsed as { error: unknown }).error) : text.slice(0, 300));
-    return parsed as { generatedAt: string; jobs: Array<{ videoId: string; plan: { title: string } }> };
+    return parsed as { ok: boolean; generatedAt: string; settingsFound: number; message: string; jobs: [] };
   });
 
 

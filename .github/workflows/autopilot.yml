@@ -2,7 +2,16 @@ name: ShortForge Autopilot
 on:
   schedule:
     - cron: "0 * * * *" # every hour on the hour (UTC)
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_test:
+        description: "Create and render one test short now"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 jobs:
   render-and-upload:
@@ -19,9 +28,11 @@ jobs:
         run: |
           echo "APP_BASE_URL is set: ${{ secrets.APP_BASE_URL != '' }}"
           echo "AUTOPILOT_SECRET is set: ${{ secrets.AUTOPILOT_SECRET != '' }}"
+          echo "Manual force test: ${{ github.event_name == 'workflow_dispatch' && inputs.force_test == 'true' }}"
       - name: Run autopilot
         env:
           AUTOPILOT_SECRET: ${{ secrets.AUTOPILOT_SECRET }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          AUTOPILOT_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_test == 'true' && '1' || '0' }}
         run: node scripts/autopilot-runner.mjs
 

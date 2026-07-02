@@ -107,16 +107,32 @@ async function handler(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 3);
   const force = url.searchParams.get("force") === "1";
+  const dryRun = url.searchParams.get("dryRun") === "1";
   const onlyUser = url.searchParams.get("user");
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   let query = supabaseAdmin.from("autopilot_settings").select("*");
-  if (!force) query = query.eq("enabled", true);
+  if (!force || !onlyUser) query = query.eq("enabled", true);
   if (onlyUser) query = query.eq("user_id", onlyUser);
   const { data: users, error } = await query;
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
+  if (dryRun) {
+    return Response.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      settingsFound: users?.length ?? 0,
+      enabledUsers: (users || []).filter((s) => s.enabled).length,
+      message: users?.length
+        ? "Autopilot settings found. Manual GitHub run can create and render a test short."
+        : "No autopilot settings found. Open Autopilot, turn it on, and click Apply.",
+      jobs: [],
+      errors: [],
+    });
+  }
+
   const jobs: unknown[] = [];
+  const errors: Array<{ userId: string; message: string }> = [];
   for (const s of users || []) {
     if (jobs.length >= limit) break;
     const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
@@ -196,15 +212,18 @@ async function handler(request: Request): Promise<Response> {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await supabaseAdmin.from("notifications").insert({
-        user_id: s.user_id,
-        title: "Autopilot skipped a slot",
-        message: msg.slice(0, 400),
-      } as never);
+      errors.push({ userId: s.user_id, message: msg.slice(0, 500) });
+      try {
+        await supabaseAdmin.from("notifications").insert({
+          user_id: s.user_id,
+          title: "Autopilot skipped a slot",
+          message: msg.slice(0, 400),
+        } as never);
+      } catch {}
     }
   }
 
-  return Response.json({ generatedAt: new Date().toISOString(), jobs });
+  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors });
 }
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({
