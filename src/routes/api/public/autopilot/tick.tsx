@@ -126,12 +126,27 @@ async function handler(request: Request): Promise<Response> {
   const { data: users, error } = await query;
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
+  // Preview: what slots are due right now for each enabled user.
+  const preview = (users || []).map((s) => {
+    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
+    return {
+      userId: s.user_id,
+      enabled: s.enabled,
+      timezone: s.timezone,
+      slotHours: s.slot_hours,
+      dueUtcHour: utcHour,
+      isDue: utcHour !== null,
+    };
+  });
+
   if (dryRun) {
     return Response.json({
       ok: true,
       generatedAt: new Date().toISOString(),
       settingsFound: users?.length ?? 0,
       enabledUsers: (users || []).filter((s) => s.enabled).length,
+      dueRightNow: preview.filter((p) => p.isDue).length,
+      preview,
       message: users?.length
         ? "Autopilot settings found. Manual GitHub run can create and render a test short."
         : "No autopilot settings found. Open Autopilot, turn it on, and click Apply.",
@@ -142,10 +157,28 @@ async function handler(request: Request): Promise<Response> {
 
   const jobs: unknown[] = [];
   const errors: Array<{ userId: string; message: string }> = [];
+  const skipped: Array<{ userId: string; reason: string }> = [];
+  const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
   for (const s of users || []) {
     if (jobs.length >= limit) break;
     const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
     if (utcHour === null) continue;
+
+    // Preflight: don't burn AI credits if YouTube isn't connected/usable.
+    try {
+      await getFreshYouTubeAccessToken(supabaseAdmin, s.user_id);
+    } catch (ytErr) {
+      const msg = ytErr instanceof Error ? ytErr.message : String(ytErr);
+      skipped.push({ userId: s.user_id, reason: msg });
+      try {
+        await supabaseAdmin.from("notifications").insert({
+          user_id: s.user_id,
+          title: "Autopilot skipped: YouTube not ready",
+          message: `${msg} — open the Channel tab and reconnect YouTube.`,
+        } as never);
+      } catch {}
+      continue;
+    }
 
     const slotKey = currentSlotKey(utcHour);
     const slotISO = force
@@ -245,7 +278,7 @@ async function handler(request: Request): Promise<Response> {
     }
   }
 
-  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors });
+  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors, skipped, preview });
 }
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({

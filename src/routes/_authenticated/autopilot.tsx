@@ -12,7 +12,7 @@ import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download, Activity, AlertCircle, CheckCircle2, Clock } from "lucide-react";
 import { toast } from "sonner";
 import {
   getAutopilotSettings,
@@ -20,6 +20,7 @@ import {
   listAutopilotVideos,
   pickAutopilotTopic,
   getLatestAutopilotTestVideo,
+  getAutopilotHealth,
 } from "@/lib/autopilot.functions";
 import {
   planCharacterShort,
@@ -49,6 +50,7 @@ function AutopilotPage() {
   const listFn = useServerFn(listAutopilotVideos);
   const pickTopicFn = useServerFn(pickAutopilotTopic);
   const latestTestFn = useServerFn(getLatestAutopilotTestVideo);
+  const healthFn = useServerFn(getAutopilotHealth);
 
   const planFn = useServerFn(planCharacterShort);
   const saveScriptFn = useServerFn(saveScriptAsDraft);
@@ -63,6 +65,11 @@ function AutopilotPage() {
   const { data: latestTest, refetch: refetchLatest } = useQuery({
     queryKey: ["autopilot-latest-test"],
     queryFn: () => latestTestFn(),
+  });
+  const { data: health } = useQuery({
+    queryKey: ["autopilot-health"],
+    queryFn: () => healthFn(),
+    refetchInterval: 60000,
   });
 
   const [form, setForm] = useState({
@@ -283,6 +290,96 @@ function AutopilotPage() {
       </Card>
 
       <div className="space-y-4">
+        {/* Autopilot Health */}
+        <Card className="glass p-6">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary-glow" />
+            <h2 className="font-display text-lg font-semibold">Autopilot Health</h2>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {health?.heartbeat?.stale ? <AlertCircle className="h-3.5 w-3.5 text-destructive" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                GitHub cron heartbeat
+              </div>
+              <div className="mt-1 text-sm font-medium">
+                {health?.heartbeat?.lastPing
+                  ? `${health.heartbeat.ageMinutes}m ago`
+                  : "Never pinged yet"}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {health?.heartbeat?.stale
+                  ? "No ping in 2h+. Check GitHub Actions is enabled."
+                  : "GitHub worker is alive."}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {health?.youtube?.connected ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <AlertCircle className="h-3.5 w-3.5 text-destructive" />}
+                YouTube channel
+              </div>
+              <div className="mt-1 truncate text-sm font-medium">
+                {health?.youtube?.connected ? (health.youtube.channelTitle || "Connected") : "Not connected"}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {health?.youtube?.connected ? "Ready to upload." : "Open the Channel tab and reconnect."}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Youtube className="h-3.5 w-3.5 text-primary-glow" /> Last upload
+              </div>
+              <div className="mt-1 truncate text-sm font-medium">
+                {health?.lastUpload ? new Date(health.lastUpload.created_at).toLocaleString() : "None yet"}
+              </div>
+              {health?.lastUpload?.youtube_video_id && (
+                <a
+                  href={`https://youtube.com/shorts/${health.lastUpload.youtube_video_id}`}
+                  target="_blank" rel="noreferrer"
+                  className="text-[11px] text-primary-glow underline"
+                >Open on YouTube</a>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Clock className="h-3.5 w-3.5" /> Next scheduled slots
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {health?.upcomingSlots?.length
+                ? health.upcomingSlots.map((iso) => (
+                    <Badge key={iso} variant="secondary">{new Date(iso).toLocaleString()}</Badge>
+                  ))
+                : <span className="text-xs text-muted-foreground">Turn on Autopilot to see upcoming slots.</span>}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs font-medium text-muted-foreground">Last 5 autopilot runs</div>
+            {!health?.recentRuns?.length ? (
+              <p className="mt-2 text-xs text-muted-foreground">No autopilot runs yet.</p>
+            ) : (
+              <ul className="mt-2 space-y-2">
+                {health.recentRuns.map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{r.title || "(untitled)"}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {r.autopilot_slot ? new Date(r.autopilot_slot).toLocaleString() : ""}
+                        {r.error_message ? ` · ${r.error_message.slice(0, 80)}` : ""}
+                      </div>
+                    </div>
+                    <Badge variant={r.youtube_video_id ? "default" : r.status === "failed" ? "destructive" : "secondary"}>
+                      {r.youtube_video_id ? "uploaded" : r.status}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
+
         {/* Two-step workflow */}
         <Card className="glass p-6">
           <div className="flex items-center gap-2">

@@ -159,8 +159,42 @@ async function processJob(job) {
   rmSync(workDir, { recursive: true, force: true });
 }
 
+async function sendHeartbeat() {
+  try {
+    const res = await fetch(`${BASE}/api/public/autopilot/heartbeat?source=github`, {
+      method: "POST",
+      headers: await autopilotHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ mode: FORCE ? "force" : "scheduled", ranAt: new Date().toISOString() }),
+    });
+    if (res.ok) console.log("💓 Heartbeat sent to backend.");
+    else console.warn(`Heartbeat failed HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  } catch (err) {
+    console.warn("Heartbeat error:", err instanceof Error ? err.message : err);
+  }
+}
+
+async function logDueSlotPreview() {
+  try {
+    const res = await fetch(`${BASE}/api/public/autopilot/tick?dryRun=1&limit=5`, {
+      method: "POST",
+      headers: await autopilotHeaders({ "Content-Type": "application/json" }),
+    });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { console.log("Due-slot preview (raw):", text.slice(0, 400)); return; }
+    console.log(`Due-slot preview: enabled=${json.enabledUsers ?? 0}, dueRightNow=${json.dueRightNow ?? 0}`);
+    for (const p of json.preview || []) {
+      console.log(`  · user=${p.userId.slice(0, 8)} tz=${p.timezone} slots=[${(p.slotHours || []).join(",")}] due=${p.isDue}`);
+    }
+  } catch (err) {
+    console.warn("Due-slot preview failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 async function main() {
   console.log(`Fetching autopilot jobs from ${BASE}...`);
+  await sendHeartbeat();
+  await logDueSlotPreview();
   if (FORCE) {
     console.log("Manual test mode: uploading the latest ready Test Flow video. No new generation will run.");
     const runRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
