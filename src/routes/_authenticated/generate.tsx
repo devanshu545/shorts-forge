@@ -306,12 +306,28 @@ function GeneratePage() {
             </div>
           </div>
 
+          <div>
+            <Label>Narrator voice</Label>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {VOICES.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setVoice(v)}
+                  className={`rounded-full border px-3 py-1 text-xs capitalize transition-all ${voice === v ? "border-primary bg-primary/15 text-primary-glow" : "border-border/60 bg-surface/40 hover:border-border"}`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <Button onClick={run} className="w-full" disabled={busy}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {busy ? "Generating…" : "Generate short (~4 min)"}
+            {busy ? "Generating…" : "Generate narrated short (~2 min)"}
           </Button>
           <p className="text-xs text-muted-foreground">
-            100% free pipeline: Lovable AI writes the plan, Pollinations paints 4 Pixar-style keyframes, your browser animates them with Ken Burns motion + a SUBSCRIBE overlay. Keep this tab open while it renders.
+            100% free: Lovable AI writes the story + narrates it, Pollinations paints the 4 emotion-matched scenes, your browser mixes it all into a narrated video with a persistent SUBSCRIBE watermark and end card. Keep this tab open while it renders.
           </p>
         </div>
       </Card>
