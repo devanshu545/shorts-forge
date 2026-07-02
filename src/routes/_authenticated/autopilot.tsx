@@ -48,12 +48,12 @@ function AutopilotPage() {
         enabled: settings.enabled,
         videos_per_day: settings.videos_per_day,
         slot_hours: settings.slot_hours,
-        topic_mode: settings.topic_mode,
+        topic_mode: settings.topic_mode as "trending" | "niche" | "mix",
         niche: settings.niche || "",
         tone: settings.tone,
         character_key: settings.character_key,
         voice: settings.voice,
-        privacy: settings.privacy,
+        privacy: settings.privacy as "public" | "unlisted" | "private",
         timezone: settings.timezone,
       });
     }

@@ -18,8 +18,11 @@ import { Route as AuthenticatedLibraryRouteImport } from './routes/_authenticate
 import { Route as AuthenticatedGenerateRouteImport } from './routes/_authenticated/generate'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedChannelRouteImport } from './routes/_authenticated/channel'
+import { Route as AuthenticatedAutopilotRouteImport } from './routes/_authenticated/autopilot'
 import { Route as ApiPublicYoutubeCallbackRouteImport } from './routes/api/public/youtube/callback'
 import { Route as ApiPublicSchedulerWorkerRouteImport } from './routes/api/public/scheduler/worker'
+import { Route as ApiPublicAutopilotUploadRouteImport } from './routes/api/public/autopilot/upload'
+import { Route as ApiPublicAutopilotTickRouteImport } from './routes/api/public/autopilot/tick'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -65,6 +68,11 @@ const AuthenticatedChannelRoute = AuthenticatedChannelRouteImport.update({
   path: '/channel',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAutopilotRoute = AuthenticatedAutopilotRouteImport.update({
+  id: '/autopilot',
+  path: '/autopilot',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const ApiPublicYoutubeCallbackRoute =
   ApiPublicYoutubeCallbackRouteImport.update({
     id: '/api/public/youtube/callback',
@@ -77,28 +85,45 @@ const ApiPublicSchedulerWorkerRoute =
     path: '/api/public/scheduler/worker',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicAutopilotUploadRoute =
+  ApiPublicAutopilotUploadRouteImport.update({
+    id: '/api/public/autopilot/upload',
+    path: '/api/public/autopilot/upload',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicAutopilotTickRoute = ApiPublicAutopilotTickRouteImport.update({
+  id: '/api/public/autopilot/tick',
+  path: '/api/public/autopilot/tick',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/autopilot': typeof AuthenticatedAutopilotRoute
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/generate': typeof AuthenticatedGenerateRoute
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
+  '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/autopilot': typeof AuthenticatedAutopilotRoute
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/generate': typeof AuthenticatedGenerateRoute
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
+  '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
@@ -107,12 +132,15 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
+  '/_authenticated/autopilot': typeof AuthenticatedAutopilotRoute
   '/_authenticated/channel': typeof AuthenticatedChannelRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/generate': typeof AuthenticatedGenerateRoute
   '/_authenticated/library': typeof AuthenticatedLibraryRoute
   '/_authenticated/schedule': typeof AuthenticatedScheduleRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
+  '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
+  '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
@@ -121,24 +149,30 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/auth'
+    | '/autopilot'
     | '/channel'
     | '/dashboard'
     | '/generate'
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/tick'
+    | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
     | '/api/public/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/auth'
+    | '/autopilot'
     | '/channel'
     | '/dashboard'
     | '/generate'
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/api/public/autopilot/tick'
+    | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
     | '/api/public/youtube/callback'
   id:
@@ -146,12 +180,15 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/_authenticated/autopilot'
     | '/_authenticated/channel'
     | '/_authenticated/dashboard'
     | '/_authenticated/generate'
     | '/_authenticated/library'
     | '/_authenticated/schedule'
     | '/_authenticated/settings'
+    | '/api/public/autopilot/tick'
+    | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
     | '/api/public/youtube/callback'
   fileRoutesById: FileRoutesById
@@ -160,6 +197,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  ApiPublicAutopilotTickRoute: typeof ApiPublicAutopilotTickRoute
+  ApiPublicAutopilotUploadRoute: typeof ApiPublicAutopilotUploadRoute
   ApiPublicSchedulerWorkerRoute: typeof ApiPublicSchedulerWorkerRoute
   ApiPublicYoutubeCallbackRoute: typeof ApiPublicYoutubeCallbackRoute
 }
@@ -229,6 +268,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChannelRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/autopilot': {
+      id: '/_authenticated/autopilot'
+      path: '/autopilot'
+      fullPath: '/autopilot'
+      preLoaderRoute: typeof AuthenticatedAutopilotRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/public/youtube/callback': {
       id: '/api/public/youtube/callback'
       path: '/api/public/youtube/callback'
@@ -243,10 +289,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicSchedulerWorkerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/autopilot/upload': {
+      id: '/api/public/autopilot/upload'
+      path: '/api/public/autopilot/upload'
+      fullPath: '/api/public/autopilot/upload'
+      preLoaderRoute: typeof ApiPublicAutopilotUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/autopilot/tick': {
+      id: '/api/public/autopilot/tick'
+      path: '/api/public/autopilot/tick'
+      fullPath: '/api/public/autopilot/tick'
+      preLoaderRoute: typeof ApiPublicAutopilotTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAutopilotRoute: typeof AuthenticatedAutopilotRoute
   AuthenticatedChannelRoute: typeof AuthenticatedChannelRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedGenerateRoute: typeof AuthenticatedGenerateRoute
@@ -256,6 +317,7 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAutopilotRoute: AuthenticatedAutopilotRoute,
   AuthenticatedChannelRoute: AuthenticatedChannelRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedGenerateRoute: AuthenticatedGenerateRoute,
@@ -271,6 +333,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  ApiPublicAutopilotTickRoute: ApiPublicAutopilotTickRoute,
+  ApiPublicAutopilotUploadRoute: ApiPublicAutopilotUploadRoute,
   ApiPublicSchedulerWorkerRoute: ApiPublicSchedulerWorkerRoute,
   ApiPublicYoutubeCallbackRoute: ApiPublicYoutubeCallbackRoute,
 }
