@@ -252,10 +252,24 @@ async function handler(request: Request): Promise<Response> {
         storyPrompt = t.storyPrompt; rawTopic = t.rawTopic; source = t.source;
       }
 
-      const characterDesc = (CHARACTERS as Record<string, string>)[s.character_key] ?? CHARACTERS.ginger_cat;
+      // Deterministic seed per (user, slot) so retries are stable.
+      const rotSeed = Math.abs(
+        Array.from(`${s.user_id}-${slotISO}`).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
+      );
 
-      // Rotate story genre so each slot in the day feels different (funny, emotional, mystery, etc.).
-      // Deterministic per (user, slot) so retries produce the same genre, but every slot differs.
+      // Multi-character pool: rotate through selected characters, fallback to single.
+      const charPool: string[] = (s.characters_pool && s.characters_pool.length ? s.characters_pool : [s.character_key]);
+      const chosenCharKey = charPool[rotSeed % charPool.length];
+      const characterDesc = (CHARACTERS as Record<string, string>)[chosenCharKey] ?? CHARACTERS.ginger_cat;
+
+      // Voice pool
+      const voicePool: string[] = (s.voices_pool && s.voices_pool.length ? s.voices_pool : [s.voice]);
+      const chosenVoice = voicePool[rotSeed % voicePool.length];
+
+      // Style preset for image prompts
+      const styleLead = STYLE_PROMPTS[s.style_preset as string] ?? STYLE_PROMPTS.pixar;
+
+      // Rotate story genre so each slot in the day feels different.
       const GENRES = [
         { key: "funny",     brief: "laugh-out-loud slapstick comedy with a silly misunderstanding and a punchline twist" },
         { key: "emotional", brief: "heartwarming tear-jerker about kindness, friendship or a tiny act of love" },
@@ -266,12 +280,19 @@ async function handler(request: Request): Promise<Response> {
         { key: "twist",     brief: "unexpected plot twist ending that makes viewers rewatch to catch clues" },
         { key: "cliffhanger", brief: "dramatic cliffhanger that makes viewers desperate for part 2" },
       ];
-      const genreSeed = Math.abs(
-        Array.from(`${s.user_id}-${slotISO}`).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
-      );
-      const genre = GENRES[genreSeed % GENRES.length];
+      const genre = GENRES[rotSeed % GENRES.length];
       const blendedTone = `${s.tone} | GENRE THIS TIME: ${genre.key.toUpperCase()} — ${genre.brief}. Make the entire story fit this genre.`;
       const plan = await planStory(blendedTone, characterDesc, storyPrompt);
+
+      // Hashtag rotator: pick 3 from pool + merge with plan hashtags.
+      const pool: string[] = s.hashtag_pool || [];
+      const rotated: string[] = [];
+      if (pool.length) {
+        for (let i = 0; i < Math.min(3, pool.length); i++) {
+          rotated.push(pool[(rotSeed + i * 7) % pool.length]);
+        }
+      }
+      const mergedHashtags = Array.from(new Set([...(plan.hashtags || []), ...rotated])).slice(0, 15);
 
       // Reserve slot immediately (so a retry does not double-render)
       const { data: reserved, error: insErr } = await supabaseAdmin
@@ -280,12 +301,12 @@ async function handler(request: Request): Promise<Response> {
           user_id: s.user_id,
           title: plan.title,
           description: plan.description,
-          hashtags: plan.hashtags,
+          hashtags: mergedHashtags,
           status: "generating_video",
           generation_progress: 20,
           generation_stage: "Autopilot: generating assets",
           autopilot_slot: slotISO,
-          script: JSON.parse(JSON.stringify(plan)),
+          script: JSON.parse(JSON.stringify({ ...plan, hashtags: mergedHashtags })),
         } as never)
         .select("id")
         .single();
@@ -296,23 +317,30 @@ async function handler(request: Request): Promise<Response> {
       const images: string[] = [];
       for (const sc of plan.scenes) {
         const hint = EMOTION_HINTS[String(sc.emotion).toLowerCase()] ?? "expressive face";
-        const prompt = `Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading, subject perfectly centered inside the vertical 9:16 safe area with headroom for captions at the bottom third. Character: ${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. Action: ${sc.action}. Scene: ${sc.setting}. Camera: ${sc.cameraShot}, subtle rim light and soft key light, volumetric atmosphere. Single subject only. Negative: no text, no logos, no watermark, no borders, no letterboxing, no extra characters.`;
-        images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137));
+        const prompt = `${styleLead}, subject perfectly centered inside the vertical 9:16 safe area with headroom for captions at the bottom third. Character: ${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. Action: ${sc.action}. Scene: ${sc.setting}. Camera: ${sc.cameraShot}, subtle rim light and soft key light, volumetric atmosphere. Single subject only. Negative: no text, no logos, no watermark, no borders, no letterboxing, no extra characters.`;
+        images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137 + rotSeed));
         await new Promise((r) => setTimeout(r, 1500));
       }
       const audios: string[] = [];
-      for (const sc of plan.scenes) audios.push(await generateTtsBase64(sc.voiceover, s.voice));
+      for (const sc of plan.scenes) audios.push(await generateTtsBase64(sc.voiceover, chosenVoice));
+
+      // Reset failure streak on successful preparation.
+      try {
+        await supabaseAdmin.from("autopilot_settings")
+          .update({ failure_streak: 0 } as never)
+          .eq("user_id", s.user_id);
+      } catch {}
 
       jobs.push({
         videoId: reservedId,
         userId: s.user_id,
         slotISO,
         privacy: s.privacy,
-        plan,
+        plan: { ...plan, hashtags: mergedHashtags },
         rawTopic,
         source,
-        images, // base64 jpg each
-        audios, // base64 mp3 each
+        images,
+        audios,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -326,11 +354,17 @@ async function handler(request: Request): Promise<Response> {
           } as never).eq("id", reservedId);
         } catch {}
       }
+      // Auto-pause on failure streak >= 3
       try {
+        const newStreak = (Number(s.failure_streak) || 0) + 1;
+        const shouldPause = s.auto_pause_on_failures !== false && newStreak >= 3;
+        await supabaseAdmin.from("autopilot_settings")
+          .update({ failure_streak: newStreak, enabled: shouldPause ? false : s.enabled } as never)
+          .eq("user_id", s.user_id);
         await supabaseAdmin.from("notifications").insert({
           user_id: s.user_id,
-          title: "Autopilot skipped a slot",
-          message: msg.slice(0, 400),
+          title: shouldPause ? "Autopilot auto-paused (3 failures)" : "Autopilot skipped a slot",
+          message: `${msg.slice(0, 300)}${shouldPause ? " — turn autopilot back on when the issue is fixed." : ""}`,
         } as never);
       } catch {}
     }
@@ -338,6 +372,7 @@ async function handler(request: Request): Promise<Response> {
 
   return Response.json({ generatedAt: new Date().toISOString(), jobs, errors, skipped, preview });
 }
+
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({
   server: { handlers: { GET: async ({ request }) => handler(request), POST: async ({ request }) => handler(request) } },
