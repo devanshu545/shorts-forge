@@ -278,7 +278,7 @@ async function handler(request: Request): Promise<Response> {
     }
   }
 
-  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors });
+  return Response.json({ generatedAt: new Date().toISOString(), jobs, errors, skipped, preview });
 }
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({
