@@ -72,14 +72,21 @@ export type Database = {
       }
       autopilot_settings: {
         Row: {
+          auto_pause_on_failures: boolean
           character_key: string
+          characters_pool: string[]
           created_at: string
           enabled: boolean
+          failure_streak: number
+          hashtag_pool: string[]
           instagram_enabled: boolean
           niche: string | null
+          pause_days: number[]
           privacy: string
           slot_hours: number[]
           slot_minutes: number[] | null
+          slot_times: string[]
+          style_preset: string
           timezone: string
           tone: string
           topic_mode: string
@@ -87,16 +94,24 @@ export type Database = {
           user_id: string
           videos_per_day: number
           voice: string
+          voices_pool: string[]
         }
         Insert: {
+          auto_pause_on_failures?: boolean
           character_key?: string
+          characters_pool?: string[]
           created_at?: string
           enabled?: boolean
+          failure_streak?: number
+          hashtag_pool?: string[]
           instagram_enabled?: boolean
           niche?: string | null
+          pause_days?: number[]
           privacy?: string
           slot_hours?: number[]
           slot_minutes?: number[] | null
+          slot_times?: string[]
+          style_preset?: string
           timezone?: string
           tone?: string
           topic_mode?: string
@@ -104,16 +119,24 @@ export type Database = {
           user_id: string
           videos_per_day?: number
           voice?: string
+          voices_pool?: string[]
         }
         Update: {
+          auto_pause_on_failures?: boolean
           character_key?: string
+          characters_pool?: string[]
           created_at?: string
           enabled?: boolean
+          failure_streak?: number
+          hashtag_pool?: string[]
           instagram_enabled?: boolean
           niche?: string | null
+          pause_days?: number[]
           privacy?: string
           slot_hours?: number[]
           slot_minutes?: number[] | null
+          slot_times?: string[]
+          style_preset?: string
           timezone?: string
           tone?: string
           topic_mode?: string
@@ -121,6 +144,7 @@ export type Database = {
           user_id?: string
           videos_per_day?: number
           voice?: string
+          voices_pool?: string[]
         }
         Relationships: []
       }

@@ -8,11 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { Slider } from "@/components/ui/slider";
+
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download, Activity, AlertCircle, CheckCircle2, Clock } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download, Activity, AlertCircle, CheckCircle2, Clock, Plus, X, Palette, Hash } from "lucide-react";
 import { toast } from "sonner";
 import {
   getAutopilotSettings,
@@ -41,7 +41,18 @@ import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
-const DEFAULT_SLOTS = [9, 13, 19];
+const DEFAULT_TIMES = ["09:00", "13:00", "19:00"];
+const WEEKDAYS = [
+  { i: 0, label: "Sun" }, { i: 1, label: "Mon" }, { i: 2, label: "Tue" },
+  { i: 3, label: "Wed" }, { i: 4, label: "Thu" }, { i: 5, label: "Fri" }, { i: 6, label: "Sat" },
+];
+const STYLE_PRESETS = [
+  { key: "pixar", label: "Pixar 3D" },
+  { key: "anime", label: "Ghibli Anime" },
+  { key: "clay",  label: "Claymation" },
+  { key: "paper", label: "Paper Cutout" },
+  { key: "noir",  label: "Cinematic Noir" },
+];
 
 function AutopilotPage() {
   const qc = useQueryClient();
@@ -74,8 +85,13 @@ function AutopilotPage() {
 
   const [form, setForm] = useState({
     enabled: false,
-    videos_per_day: 3,
-    slot_hours: DEFAULT_SLOTS,
+    slot_times: DEFAULT_TIMES as string[],
+    pause_days: [] as number[],
+    characters_pool: [] as string[],
+    voices_pool: [] as string[],
+    style_preset: "pixar",
+    hashtag_pool: [] as string[],
+    auto_pause_on_failures: true,
     topic_mode: "trending" as "trending" | "niche" | "mix",
     niche: "",
     tone: "wholesome and funny",
@@ -87,20 +103,27 @@ function AutopilotPage() {
 
   useEffect(() => {
     if (settings) {
+      const s = settings as any;
       setForm({
-        enabled: settings.enabled,
-        videos_per_day: settings.videos_per_day,
-        slot_hours: settings.slot_hours,
-        topic_mode: settings.topic_mode as "trending" | "niche" | "mix",
-        niche: settings.niche || "",
-        tone: settings.tone,
-        character_key: settings.character_key,
-        voice: settings.voice,
-        privacy: settings.privacy as "public" | "unlisted" | "private",
-        timezone: settings.timezone,
+        enabled: s.enabled,
+        slot_times: (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2, "0")}:00`)) as string[],
+        pause_days: s.pause_days || [],
+        characters_pool: s.characters_pool || [],
+        voices_pool: s.voices_pool || [],
+        style_preset: s.style_preset || "pixar",
+        hashtag_pool: s.hashtag_pool || [],
+        auto_pause_on_failures: s.auto_pause_on_failures !== false,
+        topic_mode: s.topic_mode as "trending" | "niche" | "mix",
+        niche: s.niche || "",
+        tone: s.tone,
+        character_key: s.character_key,
+        voice: s.voice,
+        privacy: s.privacy as "public" | "unlisted" | "private",
+        timezone: s.timezone,
       });
     }
   }, [settings]);
+
 
   const saveMut = useMutation({
     mutationFn: () => saveFn({ data: { ...form, niche: form.niche || null } }),
@@ -167,14 +190,48 @@ function AutopilotPage() {
     }
   };
 
-  const setSlot = (idx: number, val: number) => {
-    const arr = [...form.slot_hours];
-    arr[idx] = Math.max(0, Math.min(23, val));
-    setForm((f) => ({ ...f, slot_hours: arr }));
+  const updateTime = (idx: number, val: string) => {
+    const arr = [...form.slot_times]; arr[idx] = val;
+    setForm((f) => ({ ...f, slot_times: arr }));
+  };
+  const addTime = () => {
+    if (form.slot_times.length >= 8) return;
+    setForm((f) => ({ ...f, slot_times: [...f.slot_times, "12:00"] }));
+  };
+  const removeTime = (idx: number) => {
+    if (form.slot_times.length <= 1) return;
+    setForm((f) => ({ ...f, slot_times: f.slot_times.filter((_, i) => i !== idx) }));
+  };
+  const togglePauseDay = (d: number) => {
+    setForm((f) => ({ ...f, pause_days: f.pause_days.includes(d) ? f.pause_days.filter((x) => x !== d) : [...f.pause_days, d] }));
+  };
+  const toggleInPool = (poolKey: "characters_pool" | "voices_pool", key: string) => {
+    setForm((f) => ({ ...f, [poolKey]: f[poolKey].includes(key) ? f[poolKey].filter((x) => x !== key) : [...f[poolKey], key] }));
+  };
+  const [hashtagInput, setHashtagInput] = useState("");
+  const addHashtag = () => {
+    const clean = hashtagInput.trim().replace(/^#+/, "");
+    if (!clean || form.hashtag_pool.includes(clean) || form.hashtag_pool.length >= 50) return;
+    setForm((f) => ({ ...f, hashtag_pool: [...f.hashtag_pool, clean] }));
+    setHashtagInput("");
   };
 
   const testRunning = testStatus === "running";
   const hasReadyTest = !!(testVideo && testVideo.video_url && !testVideo.youtube_video_id);
+
+  // Live countdown to next scheduled slot.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const nextSlotIso = health?.upcomingSlots?.[0];
+  const countdown = (() => {
+    if (!nextSlotIso) return null;
+    const diff = new Date(nextSlotIso).getTime() - now;
+    if (diff <= 0) return "any moment now";
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    const s = Math.floor((diff % 60_000) / 1000);
+    return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
+  })();
 
   return (
     <div className="mx-auto grid max-w-6xl gap-6 p-6 md:p-10 lg:grid-cols-[440px_1fr]">
@@ -187,37 +244,58 @@ function AutopilotPage() {
 
         {isLoading ? <Loader2 className="mt-6 h-5 w-5 animate-spin" /> : (
           <form className="mt-6 space-y-5" onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }}>
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3 transition hover:bg-background/50">
               <div>
                 <Label>Enable autopilot</Label>
-                <p className="text-xs text-muted-foreground">Master switch. Runs hourly on the server.</p>
+                <p className="text-xs text-muted-foreground">Master switch. Renders on the server every 5 min.</p>
               </div>
               <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
             </div>
 
             <div>
-              <Label>Videos per day: {form.videos_per_day}</Label>
-              <Slider
-                min={1} max={5} step={1}
-                value={[form.videos_per_day]}
-                onValueChange={([v]) => {
-                  const slots = form.slot_hours.slice(0, v);
-                  while (slots.length < v) slots.push(DEFAULT_SLOTS[slots.length] ?? 12 + slots.length);
-                  setForm({ ...form, videos_per_day: v, slot_hours: slots });
-                }}
-                className="mt-3"
-              />
-              <p className="mt-2 text-xs text-muted-foreground">30 days × {form.videos_per_day} = {form.videos_per_day * 30} videos / month.</p>
+              <div className="flex items-center justify-between">
+                <Label>Upload times ({form.slot_times.length}/day)</Label>
+                <Button type="button" size="sm" variant="ghost" onClick={addTime} disabled={form.slot_times.length >= 8}>
+                  <Plus className="h-3.5 w-3.5" /> Add
+                </Button>
+              </div>
+              <div className="mt-2 space-y-2">
+                {form.slot_times.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/30 p-2 transition hover:bg-background/50">
+                    <Input type="time" value={t} onChange={(e) => updateTime(i, e.target.value)} className="flex-1" />
+                    <Button type="button" size="sm" variant="ghost" onClick={() => removeTime(i)} disabled={form.slot_times.length <= 1}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {form.slot_times.length * 30} videos / month · matched within ±5 min of your local time.
+              </p>
             </div>
 
             <div>
-              <Label>Upload times (hour of day, your local time)</Label>
-              <div className="mt-2 grid grid-cols-5 gap-2">
-                {Array.from({ length: form.videos_per_day }).map((_, i) => (
-                  <Input key={i} type="number" min={0} max={23} value={form.slot_hours[i] ?? 12} onChange={(e) => setSlot(i, Number(e.target.value))} />
-                ))}
+              <Label>Pause on days</Label>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {WEEKDAYS.map((d) => {
+                  const on = form.pause_days.includes(d.i);
+                  return (
+                    <button type="button" key={d.i} onClick={() => togglePauseDay(d.i)}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${on ? "border-destructive/50 bg-destructive/20 text-destructive-foreground" : "border-border/60 bg-background/30 hover:bg-background/60"}`}>
+                      {d.label}
+                    </button>
+                  );
+                })}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Best Shorts times: 9, 13, 19.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Selected days will be skipped.</p>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+              <div>
+                <Label>Auto-pause after 3 failures</Label>
+                <p className="text-xs text-muted-foreground">Prevents credit waste on repeated errors.</p>
+              </div>
+              <Switch checked={form.auto_pause_on_failures} onCheckedChange={(v) => setForm({ ...form, auto_pause_on_failures: v })} />
             </div>
 
             <div>
@@ -244,9 +322,19 @@ function AutopilotPage() {
               </div>
             )}
 
+            <div>
+              <Label className="flex items-center gap-1.5"><Palette className="h-3.5 w-3.5" /> Visual style</Label>
+              <Select value={form.style_preset} onValueChange={(v) => setForm({ ...form, style_preset: v })}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {STYLE_PRESETS.map((p) => <SelectItem key={p.key} value={p.key}>{p.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label>Character</Label>
+                <Label>Default character</Label>
                 <Select value={form.character_key} onValueChange={(v) => setForm({ ...form, character_key: v })}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -255,7 +343,7 @@ function AutopilotPage() {
                 </Select>
               </div>
               <div>
-                <Label>Voice</Label>
+                <Label>Default voice</Label>
                 <Select value={form.voice} onValueChange={(v) => setForm({ ...form, voice: v })}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -266,9 +354,63 @@ function AutopilotPage() {
             </div>
 
             <div>
+              <Label>Rotate multiple characters (optional)</Label>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {Object.keys(CHARACTERS).map((k) => {
+                  const on = form.characters_pool.includes(k);
+                  return (
+                    <button type="button" key={k} onClick={() => toggleInPool("characters_pool", k)}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${on ? "border-primary/50 bg-primary/20 text-primary-foreground" : "border-border/60 bg-background/30 hover:bg-background/60"}`}>
+                      {k.replace(/_/g, " ")}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">If any selected, autopilot rotates through them. Empty = use default character.</p>
+            </div>
+
+            <div>
+              <Label>Rotate multiple voices (optional)</Label>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {VOICES.map((v) => {
+                  const on = form.voices_pool.includes(v);
+                  return (
+                    <button type="button" key={v} onClick={() => toggleInPool("voices_pool", v)}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${on ? "border-primary/50 bg-primary/20 text-primary-foreground" : "border-border/60 bg-background/30 hover:bg-background/60"}`}>
+                      {v}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <Label className="flex items-center gap-1.5"><Hash className="h-3.5 w-3.5" /> Hashtag pool (rotator)</Label>
+              <div className="mt-2 flex gap-2">
+                <Input value={hashtagInput} onChange={(e) => setHashtagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addHashtag(); } }}
+                  placeholder="viralshorts (no #)" />
+                <Button type="button" variant="secondary" onClick={addHashtag} disabled={!hashtagInput.trim()}>Add</Button>
+              </div>
+              {form.hashtag_pool.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {form.hashtag_pool.map((h) => (
+                    <button type="button" key={h} onClick={() => setForm((f) => ({ ...f, hashtag_pool: f.hashtag_pool.filter((x) => x !== h) }))}
+                      className="rounded-full border border-border/60 bg-background/40 px-3 py-1 text-xs hover:border-destructive/50 hover:bg-destructive/10">
+                      #{h} <X className="ml-1 inline h-3 w-3" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">3 random hashtags from the pool are merged into every upload.</p>
+            </div>
+
+            <div>
               <Label>Tone</Label>
               <Input value={form.tone} onChange={(e) => setForm({ ...form, tone: e.target.value })} />
             </div>
+
+
 
             <div>
               <Label>YouTube privacy</Label>
@@ -346,6 +488,12 @@ function AutopilotPage() {
             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
               <Clock className="h-3.5 w-3.5" /> Next scheduled slots
             </div>
+            {countdown && (
+              <div className="mt-2 rounded-xl border border-primary/30 bg-primary/10 p-3">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
+                <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               {health?.upcomingSlots?.length
                 ? health.upcomingSlots.map((iso) => (
@@ -354,6 +502,7 @@ function AutopilotPage() {
                 : <span className="text-xs text-muted-foreground">Turn on Autopilot to see upcoming slots.</span>}
             </div>
           </div>
+
 
           <div className="mt-4">
             <div className="text-xs font-medium text-muted-foreground">Last 5 autopilot runs</div>
@@ -486,7 +635,7 @@ function AutopilotPage() {
             <li>1. Connect your GitHub repo to this project (Plus menu → GitHub).</li>
             <li>2. In GitHub → Settings → Secrets → Actions, add only <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL). The workflow now authenticates itself automatically.</li>
             <li>3. For testing: click Test Flow here first, then run the GitHub workflow with <code className="rounded bg-muted px-1">force_test=true</code>. It uploads that ready preview video only.</li>
-            <li>4. For automation: turn on Autopilot and hit Apply. The workflow runs hourly and renders + uploads any Shorts whose scheduled slot just passed.</li>
+            <li>4. For automation: turn on Autopilot and hit Apply. The workflow runs every 5 minutes and renders + uploads any Shorts whose scheduled time just arrived (±5 min).</li>
           </ol>
         </Card>
 

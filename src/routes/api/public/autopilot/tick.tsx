@@ -93,21 +93,57 @@ async function generateTtsBase64(text: string, voice: string): Promise<string> {
   return Buffer.from(await res.arrayBuffer()).toString("base64");
 }
 
-function currentSlotKey(hour: number) {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}`;
+function currentSlotKey(slotISO: string) {
+  return slotISO;
 }
 
-function isSlotDue(slotHours: number[], timezone: string): number | null {
-  // Compute current hour in user's timezone; if it matches a slot, return that hour (UTC-marked as slot key).
+// Returns the matched slot time "HH:MM" if the current local time (in tz) is
+// within ±5 minutes of any slot_time entry; else null.
+function isSlotDue(slotTimes: string[], pauseDays: number[], timezone: string): string | null {
   try {
     const now = new Date();
-    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, timeZone: timezone });
-    const localHour = Number(fmt.format(now));
-    if (slotHours.includes(localHour)) return now.getUTCHours();
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, hour: "2-digit", minute: "2-digit", weekday: "short", hour12: false,
+    }).formatToParts(now);
+    const wdMap: Record<string, number> = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+    const wd = parts.find((p) => p.type === "weekday")?.value;
+    if (wd && pauseDays.includes(wdMap[wd])) return null;
+    const hh = Number(parts.find((p) => p.type === "hour")?.value ?? "-1");
+    const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "-1");
+    if (hh < 0 || mm < 0) return null;
+    const nowMin = hh * 60 + mm;
+    for (const t of slotTimes) {
+      const [sh, sm] = t.split(":").map(Number);
+      const slotMin = sh * 60 + sm;
+      if (Math.abs(nowMin - slotMin) <= 5) return `${String(sh).padStart(2,"0")}:${String(sm).padStart(2,"0")}`;
+    }
   } catch {}
   return null;
 }
+
+// Build a stable slot ISO for "today at HH:MM local" in the user's tz.
+function slotISOForToday(hhmm: string, timezone: string): string {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  const probe = new Date(`${y}-${m}-${d}T${hhmm}:00Z`);
+  const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
+  const tzOffsetMinutes = (Number(dtf.format(probe)) - probe.getUTCHours()) * 60;
+  return new Date(probe.getTime() - tzOffsetMinutes * 60_000).toISOString();
+}
+
+const STYLE_PROMPTS: Record<string, string> = {
+  pixar: "Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading",
+  anime: "Studio Ghibli inspired 2D anime cel-shaded illustration, ultra-detailed, soft painterly backgrounds, warm color palette, cinematic composition",
+  clay: "Stop-motion claymation still, tactile plasticine textures, hand-crafted charm, soft studio lighting, shallow depth of field",
+  paper: "Paper cutout craft illustration, layered construction paper textures, soft shadows, warm storybook lighting",
+  noir: "Cinematic film-noir 3D render, moody chiaroscuro lighting, deep contrast, dramatic rim light, muted color palette",
+};
+
 
 async function handler(request: Request): Promise<Response> {
   const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
@@ -128,14 +164,17 @@ async function handler(request: Request): Promise<Response> {
 
   // Preview: what slots are due right now for each enabled user.
   const preview = (users || []).map((s) => {
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
+    const slotTimes: string[] = (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2,"0")}:00`));
+    const pauseDays: number[] = s.pause_days || [];
+    const matched = force ? (slotTimes[0] ?? "00:00") : isSlotDue(slotTimes, pauseDays, s.timezone);
     return {
       userId: s.user_id,
       enabled: s.enabled,
       timezone: s.timezone,
-      slotHours: s.slot_hours,
-      dueUtcHour: utcHour,
-      isDue: utcHour !== null,
+      slotTimes,
+      pauseDays,
+      dueSlot: matched,
+      isDue: matched !== null,
     };
   });
 
@@ -161,8 +200,10 @@ async function handler(request: Request): Promise<Response> {
   const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
   for (const s of users || []) {
     if (jobs.length >= limit) break;
-    const utcHour = force ? new Date().getUTCHours() : isSlotDue(s.slot_hours, s.timezone);
-    if (utcHour === null) continue;
+    const slotTimes: string[] = (s.slot_times && s.slot_times.length ? s.slot_times : (s.slot_hours || []).map((h: number) => `${String(h).padStart(2,"0")}:00`));
+    const pauseDays: number[] = s.pause_days || [];
+    const matched = force ? (slotTimes[0] ?? "00:00") : isSlotDue(slotTimes, pauseDays, s.timezone);
+    if (matched === null) continue;
 
     // Preflight: don't burn AI credits if YouTube isn't connected/usable.
     try {
@@ -180,11 +221,8 @@ async function handler(request: Request): Promise<Response> {
       continue;
     }
 
-    const slotKey = currentSlotKey(utcHour);
-    const slotISO = force
-      ? new Date().toISOString()
-      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
-
+    const slotISO = force ? new Date().toISOString() : slotISOForToday(matched, s.timezone);
+    void currentSlotKey; // preserved for backward-compat imports
 
     if (!force) {
       const { data: existing } = await supabaseAdmin
@@ -195,6 +233,8 @@ async function handler(request: Request): Promise<Response> {
         .maybeSingle();
       if (existing) continue;
     }
+
+
 
 
     let reservedId: string | null = null;
@@ -212,10 +252,24 @@ async function handler(request: Request): Promise<Response> {
         storyPrompt = t.storyPrompt; rawTopic = t.rawTopic; source = t.source;
       }
 
-      const characterDesc = (CHARACTERS as Record<string, string>)[s.character_key] ?? CHARACTERS.ginger_cat;
+      // Deterministic seed per (user, slot) so retries are stable.
+      const rotSeed = Math.abs(
+        Array.from(`${s.user_id}-${slotISO}`).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
+      );
 
-      // Rotate story genre so each slot in the day feels different (funny, emotional, mystery, etc.).
-      // Deterministic per (user, slot) so retries produce the same genre, but every slot differs.
+      // Multi-character pool: rotate through selected characters, fallback to single.
+      const charPool: string[] = (s.characters_pool && s.characters_pool.length ? s.characters_pool : [s.character_key]);
+      const chosenCharKey = charPool[rotSeed % charPool.length];
+      const characterDesc = (CHARACTERS as Record<string, string>)[chosenCharKey] ?? CHARACTERS.ginger_cat;
+
+      // Voice pool
+      const voicePool: string[] = (s.voices_pool && s.voices_pool.length ? s.voices_pool : [s.voice]);
+      const chosenVoice = voicePool[rotSeed % voicePool.length];
+
+      // Style preset for image prompts
+      const styleLead = STYLE_PROMPTS[s.style_preset as string] ?? STYLE_PROMPTS.pixar;
+
+      // Rotate story genre so each slot in the day feels different.
       const GENRES = [
         { key: "funny",     brief: "laugh-out-loud slapstick comedy with a silly misunderstanding and a punchline twist" },
         { key: "emotional", brief: "heartwarming tear-jerker about kindness, friendship or a tiny act of love" },
@@ -226,12 +280,19 @@ async function handler(request: Request): Promise<Response> {
         { key: "twist",     brief: "unexpected plot twist ending that makes viewers rewatch to catch clues" },
         { key: "cliffhanger", brief: "dramatic cliffhanger that makes viewers desperate for part 2" },
       ];
-      const genreSeed = Math.abs(
-        Array.from(`${s.user_id}-${slotISO}`).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
-      );
-      const genre = GENRES[genreSeed % GENRES.length];
+      const genre = GENRES[rotSeed % GENRES.length];
       const blendedTone = `${s.tone} | GENRE THIS TIME: ${genre.key.toUpperCase()} — ${genre.brief}. Make the entire story fit this genre.`;
       const plan = await planStory(blendedTone, characterDesc, storyPrompt);
+
+      // Hashtag rotator: pick 3 from pool + merge with plan hashtags.
+      const pool: string[] = s.hashtag_pool || [];
+      const rotated: string[] = [];
+      if (pool.length) {
+        for (let i = 0; i < Math.min(3, pool.length); i++) {
+          rotated.push(pool[(rotSeed + i * 7) % pool.length]);
+        }
+      }
+      const mergedHashtags = Array.from(new Set([...(plan.hashtags || []), ...rotated])).slice(0, 15);
 
       // Reserve slot immediately (so a retry does not double-render)
       const { data: reserved, error: insErr } = await supabaseAdmin
@@ -240,12 +301,12 @@ async function handler(request: Request): Promise<Response> {
           user_id: s.user_id,
           title: plan.title,
           description: plan.description,
-          hashtags: plan.hashtags,
+          hashtags: mergedHashtags,
           status: "generating_video",
           generation_progress: 20,
           generation_stage: "Autopilot: generating assets",
           autopilot_slot: slotISO,
-          script: JSON.parse(JSON.stringify(plan)),
+          script: JSON.parse(JSON.stringify({ ...plan, hashtags: mergedHashtags })),
         } as never)
         .select("id")
         .single();
@@ -256,23 +317,30 @@ async function handler(request: Request): Promise<Response> {
       const images: string[] = [];
       for (const sc of plan.scenes) {
         const hint = EMOTION_HINTS[String(sc.emotion).toLowerCase()] ?? "expressive face";
-        const prompt = `Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading, subject perfectly centered inside the vertical 9:16 safe area with headroom for captions at the bottom third. Character: ${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. Action: ${sc.action}. Scene: ${sc.setting}. Camera: ${sc.cameraShot}, subtle rim light and soft key light, volumetric atmosphere. Single subject only. Negative: no text, no logos, no watermark, no borders, no letterboxing, no extra characters.`;
-        images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137));
+        const prompt = `${styleLead}, subject perfectly centered inside the vertical 9:16 safe area with headroom for captions at the bottom third. Character: ${characterDesc}, showing a clearly ${sc.emotion} expression: ${hint}. Action: ${sc.action}. Scene: ${sc.setting}. Camera: ${sc.cameraShot}, subtle rim light and soft key light, volumetric atmosphere. Single subject only. Negative: no text, no logos, no watermark, no borders, no letterboxing, no extra characters.`;
+        images.push(await fetchPollinationsBase64(prompt, 1000 + sc.order * 137 + rotSeed));
         await new Promise((r) => setTimeout(r, 1500));
       }
       const audios: string[] = [];
-      for (const sc of plan.scenes) audios.push(await generateTtsBase64(sc.voiceover, s.voice));
+      for (const sc of plan.scenes) audios.push(await generateTtsBase64(sc.voiceover, chosenVoice));
+
+      // Reset failure streak on successful preparation.
+      try {
+        await supabaseAdmin.from("autopilot_settings")
+          .update({ failure_streak: 0 } as never)
+          .eq("user_id", s.user_id);
+      } catch {}
 
       jobs.push({
         videoId: reservedId,
         userId: s.user_id,
         slotISO,
         privacy: s.privacy,
-        plan,
+        plan: { ...plan, hashtags: mergedHashtags },
         rawTopic,
         source,
-        images, // base64 jpg each
-        audios, // base64 mp3 each
+        images,
+        audios,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -286,11 +354,17 @@ async function handler(request: Request): Promise<Response> {
           } as never).eq("id", reservedId);
         } catch {}
       }
+      // Auto-pause on failure streak >= 3
       try {
+        const newStreak = (Number(s.failure_streak) || 0) + 1;
+        const shouldPause = s.auto_pause_on_failures !== false && newStreak >= 3;
+        await supabaseAdmin.from("autopilot_settings")
+          .update({ failure_streak: newStreak, enabled: shouldPause ? false : s.enabled } as never)
+          .eq("user_id", s.user_id);
         await supabaseAdmin.from("notifications").insert({
           user_id: s.user_id,
-          title: "Autopilot skipped a slot",
-          message: msg.slice(0, 400),
+          title: shouldPause ? "Autopilot auto-paused (3 failures)" : "Autopilot skipped a slot",
+          message: `${msg.slice(0, 300)}${shouldPause ? " — turn autopilot back on when the issue is fixed." : ""}`,
         } as never);
       } catch {}
     }
@@ -298,6 +372,7 @@ async function handler(request: Request): Promise<Response> {
 
   return Response.json({ generatedAt: new Date().toISOString(), jobs, errors, skipped, preview });
 }
+
 
 export const Route = createFileRoute("/api/public/autopilot/tick")({
   server: { handlers: { GET: async ({ request }) => handler(request), POST: async ({ request }) => handler(request) } },

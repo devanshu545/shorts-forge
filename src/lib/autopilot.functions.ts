@@ -75,10 +75,18 @@ export const runAutopilotTestNow = createServerFn({ method: "POST" })
   });
 
 
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const SettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  videos_per_day: z.number().int().min(1).max(5).default(3),
-  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(5),
+  videos_per_day: z.number().int().min(1).max(8).default(3),
+  slot_hours: z.array(z.number().int().min(0).max(23)).min(1).max(8),
+  slot_times: z.array(z.string().regex(TIME_RE)).min(1).max(8).default(["09:00","13:00","19:00"]),
+  pause_days: z.array(z.number().int().min(0).max(6)).max(7).default([]),
+  characters_pool: z.array(z.string().min(1).max(60)).max(10).default([]),
+  voices_pool: z.array(z.string().min(1).max(20)).max(10).default([]),
+  style_preset: z.enum(["pixar","anime","clay","paper","noir"]).default("pixar"),
+  hashtag_pool: z.array(z.string().min(1).max(40)).max(50).default([]),
+  auto_pause_on_failures: z.boolean().default(true),
   topic_mode: z.enum(["trending", "niche", "mix"]).default("trending"),
   niche: z.string().max(400).nullable().optional(),
   tone: z.string().min(2).max(80).default("wholesome and funny"),
@@ -104,10 +112,16 @@ export const saveAutopilotSettings = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => SettingsSchema.parse(raw))
   .handler(async ({ data, context }) => {
+    // Sort + de-dupe slot_times, derive slot_hours + videos_per_day from it.
+    const sortedTimes = Array.from(new Set(data.slot_times)).sort();
+    const derivedHours = Array.from(new Set(sortedTimes.map((t) => Number(t.split(":")[0]))));
     const row = {
       user_id: context.userId,
       ...data,
-      slot_hours: data.slot_hours.slice(0, data.videos_per_day),
+      slot_times: sortedTimes,
+      slot_hours: derivedHours,
+      videos_per_day: sortedTimes.length,
+      failure_streak: 0, // reset on manual save
       updated_at: new Date().toISOString(),
     };
     const { data: saved, error } = await context.supabase
@@ -118,6 +132,7 @@ export const saveAutopilotSettings = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return saved;
   });
+
 
 export const listAutopilotVideos = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -133,25 +148,27 @@ export const listAutopilotVideos = createServerFn({ method: "GET" })
     return data;
   });
 
-function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3): string[] {
+function computeUpcomingSlots(slotTimes: string[], pauseDays: number[], timezone: string, count = 3): string[] {
   const out: string[] = [];
   const now = new Date();
-  for (let dayOffset = 0; dayOffset < 3 && out.length < count; dayOffset += 1) {
+  const times = [...slotTimes].sort();
+  for (let dayOffset = 0; dayOffset < 7 && out.length < count; dayOffset += 1) {
     const day = new Date(now.getTime() + dayOffset * 86400_000);
-    for (const h of [...slotHours].sort((a, b) => a - b)) {
-      // Build a Date that represents "today at hour h in the user's tz".
-      // Approximation: format now in tz to get local Y-M-D, then use UTC offset diff.
+    for (const t of times) {
       try {
         const local = new Intl.DateTimeFormat("en-CA", {
           timeZone: timezone,
-          year: "numeric", month: "2-digit", day: "2-digit",
+          year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
         }).formatToParts(day);
         const y = local.find((p) => p.type === "year")?.value;
         const m = local.find((p) => p.type === "month")?.value;
         const d = local.find((p) => p.type === "day")?.value;
+        const wd = local.find((p) => p.type === "weekday")?.value;
         if (!y || !m || !d) continue;
-        // Convert wall-clock local time to UTC via a probe date.
-        const probe = new Date(`${y}-${m}-${d}T${String(h).padStart(2, "0")}:00:00Z`);
+        const wdMap: Record<string, number> = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+        if (wd && pauseDays.includes(wdMap[wd])) continue;
+        const [hh, mm] = t.split(":");
+        const probe = new Date(`${y}-${m}-${d}T${hh}:${mm}:00Z`);
         const tzOffsetMinutes = (() => {
           const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
           const localHour = Number(dtf.format(probe));
@@ -168,6 +185,7 @@ function computeUpcomingSlots(slotHours: number[], timezone: string, count = 3):
   }
   return out;
 }
+
 
 export const getAutopilotHealth = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -206,8 +224,9 @@ export const getAutopilotHealth = createServerFn({ method: "GET" })
       : null;
 
     const upcomingSlots = settings?.enabled
-      ? computeUpcomingSlots(settings.slot_hours || [], settings.timezone || "UTC", 3)
+      ? computeUpcomingSlots(settings.slot_times || [], settings.pause_days || [], settings.timezone || "UTC", 3)
       : [];
+
 
     const ytConnected = Boolean(ytRes.data && String(ytRes.data.scope || "").includes("youtube.upload"));
 

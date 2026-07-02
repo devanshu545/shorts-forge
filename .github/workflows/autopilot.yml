@@ -1,7 +1,7 @@
 name: ShortForge Autopilot
 on:
   schedule:
-    - cron: "0 * * * *" # every hour on the hour (UTC)
+    - cron: "*/5 * * * *" # every 5 minutes — matches custom HH:MM slot times within ±5 min
   workflow_dispatch:
     inputs:
       force_test:
