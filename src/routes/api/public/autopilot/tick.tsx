@@ -213,7 +213,25 @@ async function handler(request: Request): Promise<Response> {
       }
 
       const characterDesc = (CHARACTERS as Record<string, string>)[s.character_key] ?? CHARACTERS.ginger_cat;
-      const plan = await planStory(s.tone, characterDesc, storyPrompt);
+
+      // Rotate story genre so each slot in the day feels different (funny, emotional, mystery, etc.).
+      // Deterministic per (user, slot) so retries produce the same genre, but every slot differs.
+      const GENRES = [
+        { key: "funny",     brief: "laugh-out-loud slapstick comedy with a silly misunderstanding and a punchline twist" },
+        { key: "emotional", brief: "heartwarming tear-jerker about kindness, friendship or a tiny act of love" },
+        { key: "mystery",   brief: "curious mini-mystery where the character notices something odd and investigates" },
+        { key: "wholesome", brief: "cozy feel-good slice-of-life moment that makes viewers smile" },
+        { key: "adventure", brief: "small brave adventure with a mini obstacle and a triumphant beat" },
+        { key: "underdog",  brief: "underdog story where the character overcomes doubt and wins in a small way" },
+        { key: "twist",     brief: "unexpected plot twist ending that makes viewers rewatch to catch clues" },
+        { key: "cliffhanger", brief: "dramatic cliffhanger that makes viewers desperate for part 2" },
+      ];
+      const genreSeed = Math.abs(
+        Array.from(`${s.user_id}-${slotISO}`).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
+      );
+      const genre = GENRES[genreSeed % GENRES.length];
+      const blendedTone = `${s.tone} | GENRE THIS TIME: ${genre.key.toUpperCase()} — ${genre.brief}. Make the entire story fit this genre.`;
+      const plan = await planStory(blendedTone, characterDesc, storyPrompt);
 
       // Reserve slot immediately (so a retry does not double-render)
       const { data: reserved, error: insErr } = await supabaseAdmin
