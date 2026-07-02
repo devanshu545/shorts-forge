@@ -1,69 +1,61 @@
 ## Goal
 
-Reproduce the reference's look (hyper-realistic 3D Pixar-style animal short, 9:16, ~18s, single recurring character across 4 scenes, "Comment for part 3" + SUBSCRIBE overlay at the end) from any topic + character the user picks.
+Turn the current silent 4-image slideshow into a real narrated story short: the script drives the voiceover, each scene's keyframe shows the character's emotion at that beat, a small SUBSCRIBE watermark sits on every frame, and a bigger "Sub for part 2" reveal plays at the end. Timing of each scene follows the length of its voiceover so the picture always matches the words.
 
-## Reality check on the "videogen tool via server pipeline"
+## What changes
 
-The Lovable `videogen` tool is an **agent-only tool** — it runs in my sandbox, not in your app's server code. Your app cannot invoke it at runtime. So a real "server-triggered pipeline" needs a video-generation HTTP API. Two viable providers, in order of preference:
+### 1. Script now includes narration + emotion per scene
+Extend the Lovable AI plan (`character-short.functions.ts` → `CharacterPlan`) so every scene beat carries two new fields:
+- `voiceover` — 1–2 spoken sentences (≤ ~18 words) describing what's happening.
+- `emotion` — one of: `happy`, `curious`, `surprised`, `sad`, `determined`, `proud`, `sleepy`, `excited`, `scared`, `hopeful`.
 
-1. **Lovable AI Gateway video model** (uses your existing `LOVABLE_API_KEY`, no new secret). I will verify at implementation start whether the gateway exposes a Kling/Seedance/Veo endpoint. If yes → use it. This is why our earlier Veo attempt 404'd; we hit the wrong path.
-2. **fal.ai** (fallback): fastest and cheapest realistic video API for this use case — Kling 2.1 image-to-video ≈ $0.05–0.15 per 5s clip. Requires you to add a `FAL_KEY` secret (I'll walk you through where to get it if #1 doesn't pan out).
+The 4 voiceovers together form the full story. Prompt is tightened so scene 4 lands the emotional payoff and naturally leads into a "part 2" hook.
 
-I'll not touch billing without asking. If #1 works we ship on that; if not I stop and ask before adding fal.
+### 2. Keyframes reflect the emotion
+`generateSceneKeyframe` prompt is expanded to inject the emotion into the Pollinations request, e.g.
+`"…tiny orange fox kit with a wide **surprised** expression, ears perked up, mouth slightly open…"`.
+This makes each of the 4 free Flux renders visibly different in expression, not just background.
 
-## Locked video template
+### 3. Free voiceover via Lovable AI TTS
+Add a new server function `generateSceneVoiceover` that calls Lovable AI Gateway's `openai/gpt-4o-mini-tts` (already provisioned, no billing) and uploads each MP3 to the `audio` bucket. One MP3 per scene, so timing is per-scene, not one long file.
 
-Every generated video follows this exact shape (~18s, 30 fps, 1080×1920):
+Voice defaults to `alloy` (warm, neutral). A small voice picker (`alloy`, `nova`, `shimmer`, `echo`, `onyx`) is added to the Generate form.
 
-| Beat | Duration | Purpose |
-|---|---|---|
-| Scene 1 — Character intro / hook | 4s | Show character in idyllic setting |
-| Scene 2 — Activity begins | 5s | Character starts the topic action |
-| Scene 3 — Activity mid / twist | 5s | Payoff moment |
-| Scene 4 — Reveal / "look at camera" | 4s | Character faces camera, emotional close |
-| CTA overlay | last 3s of Scene 4 | "Comment for part 3" top, animated SUBSCRIBE yellow ribbon bottom |
+### 4. Stitcher becomes audio-aware
+`stitcher.ts` upgrades:
+- Accepts `{ imageUrl, audioUrl }` per scene.
+- Each scene's on-screen duration = that scene's audio duration (min 3s, max 8s).
+- Builds a combined `AudioContext` → `MediaStreamAudioDestinationNode`, mixes the four MP3s in sequence, and merges that track into the canvas stream so `MediaRecorder` writes video **and** audio into the WebM.
+- Ken-Burns motion timing rescales to each scene's real duration.
+- **Small persistent SUBSCRIBE watermark**: bottom-right, ~5% width, semi-transparent yellow pill, present from frame 0 to end.
+- **End card**: last ~2s the small watermark grows into the big yellow "SUBSCRIBE" ribbon and the top text "Sub for part 2 👇" pops in.
 
-Character consistency: I generate one **reference keyframe** with imagegen (Lovable AI, free) using the user's character description. Every scene's video prompt reuses the same character-description phrase verbatim + the scene's setting/action. For providers that support image-to-video, scene 1's last frame seeds scene 2, etc.
+### 5. Generate page copy + progress
+- New stage labels: `"Writing story…"`, `"Recording narration for scene N…"`, `"Painting scene N (feeling: happy)…"`, `"Stitching narrated video…"`.
+- Voice picker under the tone chips.
+- Result card gets a chip showing total duration and that audio is embedded.
 
-## UI changes (`/generate`)
+## Files touched
 
-Replace current style selector with:
+```text
+src/lib/animation/character-short.functions.ts   scene schema: +voiceover +emotion; new generateSceneVoiceover fn
+src/lib/animation/stitcher.ts                    audio mixing, per-scene duration, persistent watermark, end-card
+src/routes/_authenticated/generate.tsx           voice picker, call voiceover per scene, pass audio urls to stitcher
+src/components/SceneProgress.tsx                 show emotion label + tiny audio icon when a scene has narration
+```
 
-- Character picker (visual cards): Ginger Cat, Golden Retriever Puppy, Panda Cub, Bunny, Fox Kit, Baby Elephant, Duckling, "Custom…"
-- Topic input (existing, relabeled: *"What is your character doing?"* — e.g. "learning to bake a cake", "fishing at a lake", "opening a lemonade stand")
-- Tone chips: Wholesome / Funny / Adventurous / Cozy
-- One button: **Generate short** (no more Veo/Animated toggle)
-- Progress panel showing 4 scene thumbnails as they render (image → video swap)
+No new secrets, no new packages. Still 100% inside your existing free stack:
+- Lovable AI (script + TTS) — already provisioned.
+- Pollinations (keyframes) — free public endpoint.
+- Browser canvas + WebAudio (mix + record) — free forever.
 
-## Pipeline (server functions + client stitcher)
+## Technical notes
 
-1. `planCharacterShort` (`src/lib/animation/character-plan.functions.ts`, Lovable AI Gemini) → returns `{ character: {name, species, appearance, wardrobe}, scenes: [{setting, action, mood, cameraShot}] × 4, cta: {top, bottom} }`. Strict short prompts to avoid Gemini state-limit errors.
-2. `generateSceneKeyframe` (imagegen, per scene) → 1080×1920 PNG stored in `videos` bucket at `{uid}/{videoId}/keyframes/{n}.png`.
-3. `generateSceneClip` — server function that calls the chosen video provider with `{ prompt, image_url: keyframe_url, duration }` and polls the long-running operation. Returns an mp4 URL saved at `{uid}/{videoId}/clips/{n}.mp4`.
-4. Client stitcher (`src/lib/animation/stitcher.ts`): loads the 4 clips into hidden `<video>` elements, plays them sequentially onto a 1080×1920 canvas at 30 fps, overlays the CTA text (Titan One yellow ribbon animated with `interpolate`-style easing) during the last 3s, records via `MediaRecorder` → single WebM, uploads as the final `videos/{uid}/{videoId}.webm`, marks row `ready`.
-5. Metadata + thumbnail (existing `generateMetadataForVideo` + `maybeGenerateThumbnail`) run after.
+- Lovable AI TTS: `POST https://ai.gateway.lovable.dev/v1/audio/speech`, `model: "openai/gpt-4o-mini-tts"`, `stream_format` omitted (we want a single MP3 blob to upload), `response_format: "mp3"`. Uploaded to `audio/{userId}/{videoId}/scene-{n}.mp3`, signed URL returned.
+- MediaRecorder in Chromium supports `video/webm;codecs=vp9,opus`; we already pick opus-capable mime. To include audio we build the stream from `[...canvas.captureStream().getVideoTracks(), destinationNode.stream.getAudioTracks()[0]]`.
+- Audio scheduling uses `AudioBufferSourceNode.start(when)` chained per scene start time so playback stays in lockstep with the visual switch.
+- If TTS ever 402s (out of Lovable credits), the pipeline falls back gracefully: video renders without audio, warning toast tells the user credits ran out. Never blocks the render.
 
-Credit-waste guards: if any scene clip fails, retry once, then abort the run and mark the row `failed` with the provider error surfaced. Never proceed to the next paid step after a failure.
+## Result
 
-## Files to touch
-
-- `src/routes/_authenticated/generate.tsx` — replace style selector with character picker; wire new pipeline
-- `src/components/CharacterPicker.tsx` — new
-- `src/components/SceneProgress.tsx` — new (4-tile progress)
-- `src/lib/animation/character-plan.functions.ts` — new (replaces plan.functions.ts for this flow)
-- `src/lib/animation/scene-clips.functions.ts` — new (keyframe + clip generation, provider abstraction)
-- `src/lib/animation/stitcher.ts` — new (client-side canvas + MediaRecorder final assembly with CTA overlay)
-- `src/lib/animation/renderer.ts` — keep, no longer default
-- `src/lib/media.functions.ts` — remove Veo direct-call path (unused), keep metadata/thumbnail helpers
-
-DB: no schema change. Reuse `videos` row; add scene URLs to the existing `script` JSONB field.
-
-## Verification (before saying done)
-
-1. Run one end-to-end generation with the ginger cat + topic "fishing at a pond then cooking the catch" and confirm the resulting mp4 in Library visually matches the reference (character consistent across scenes, CTA overlay present, ~18s, 9:16).
-2. Confirm failure path: kill provider mid-run, check the row goes to `failed` with a clear message and no further billable calls fire.
-3. Confirm Library playback + YouTube upload dialog still works with the new file.
-
-## Open decision I'll ask about only if needed
-
-If the Lovable AI Gateway does not expose a video-generation endpoint, I'll stop and ask you to add a `FAL_KEY` before spending credits. I will not silently swap in a new billable provider.
+One click → Lovable AI writes a 4-beat story with per-scene narration + emotion → Pollinations paints each scene with the matching expression → Lovable AI narrates it → your browser mixes narration + Ken-Burns visuals + persistent SUBSCRIBE watermark + end-card into a single narrated WebM in your Library. Ready to upload to YouTube.
