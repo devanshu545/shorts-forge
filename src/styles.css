@@ -114,9 +114,178 @@
   h1, h2, h3, h4, h5, .font-display { font-family: var(--font-display); letter-spacing: -0.01em; }
 }
 
-@utility glass {
-  background: linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0.015));
-  border: 1px solid oklch(1 0 0 / 0.08);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+/* ============ Premium Apple-inspired Liquid Glass ============ */
+
+/* Light theme (Apple-like frosted white) — activates when <html class="light"> */
+.light {
+  color-scheme: light;
+  --background: oklch(0.98 0.005 280);
+  --foreground: oklch(0.18 0.02 280);
+  --surface: oklch(0.995 0.003 280);
+  --surface-2: oklch(0.97 0.005 280);
+  --card: oklch(1 0 0 / 0.65);
+  --card-foreground: oklch(0.18 0.02 280);
+  --popover: oklch(0.99 0.003 280);
+  --popover-foreground: oklch(0.18 0.02 280);
+  --secondary: oklch(0.95 0.008 280);
+  --secondary-foreground: oklch(0.2 0.02 280);
+  --muted: oklch(0.94 0.006 280);
+  --muted-foreground: oklch(0.45 0.02 280);
+  --accent: oklch(0.94 0.02 290);
+  --accent-foreground: oklch(0.2 0.02 280);
+  --border: oklch(0 0 0 / 0.08);
+  --input: oklch(0 0 0 / 0.06);
+  --sidebar: oklch(0.99 0.003 280);
+  --sidebar-foreground: oklch(0.25 0.02 280);
+  --sidebar-accent: oklch(0.95 0.01 290);
+  --sidebar-border: oklch(0 0 0 / 0.06);
 }
+.light body {
+  background-image:
+    radial-gradient(circle at 12% -10%, oklch(0.72 0.22 290 / 0.18), transparent 55%),
+    radial-gradient(circle at 92% 5%, oklch(0.78 0.18 210 / 0.15), transparent 50%),
+    radial-gradient(circle at 50% 100%, oklch(0.85 0.14 340 / 0.12), transparent 60%);
+}
+
+/* Ambient dark background glow — subtle, non-distracting */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(60% 45% at 15% 10%, oklch(0.63 0.22 285 / 0.10), transparent 70%),
+    radial-gradient(50% 40% at 85% 90%, oklch(0.72 0.24 300 / 0.08), transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Premium frosted-glass panel (used by <Card className="glass"> everywhere) */
+@utility glass {
+  position: relative;
+  background:
+    linear-gradient(180deg, oklch(1 0 0 / 0.06), oklch(1 0 0 / 0.02)),
+    linear-gradient(135deg, oklch(0.72 0.24 300 / 0.04), transparent 55%);
+  border: 1px solid oklch(1 0 0 / 0.10);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.08) inset,
+    0 0 0 1px oklch(1 0 0 / 0.02) inset,
+    0 30px 60px -30px oklch(0 0 0 / 0.55),
+    0 8px 24px -12px oklch(0 0 0 / 0.35);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1), border-color 320ms;
+}
+.glass:hover {
+  border-color: oklch(1 0 0 / 0.16);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.10) inset,
+    0 40px 80px -30px oklch(0 0 0 / 0.65),
+    0 12px 32px -12px oklch(0 0 0 / 0.4);
+}
+.light .glass {
+  background:
+    linear-gradient(180deg, oklch(1 0 0 / 0.7), oklch(1 0 0 / 0.45)),
+    linear-gradient(135deg, oklch(0.72 0.24 300 / 0.06), transparent 55%);
+  border-color: oklch(0 0 0 / 0.06);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.9) inset,
+    0 20px 40px -20px oklch(0 0 0 / 0.15),
+    0 4px 12px -4px oklch(0 0 0 / 0.08);
+}
+
+/* Reflective highlight on top edge of glass surfaces */
+.glass::after {
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.25), transparent 30%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Smooth global transitions — GPU accelerated */
+button, a, input, select, textarea,
+[role="tab"], [role="menuitem"], [data-state] {
+  transition:
+    background-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 200ms ease,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
+}
+
+/* Buttons feel spring-loaded */
+button:not(:disabled):active { transform: scale(0.97); }
+
+/* Inputs / textareas / selects get a glassy focus ring */
+input:focus-visible, textarea:focus-visible, select:focus-visible,
+[data-slot="input"]:focus-visible, [data-slot="textarea"]:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--primary),
+    0 0 0 4px oklch(0.63 0.22 285 / 0.25),
+    0 6px 20px -8px oklch(0.63 0.22 285 / 0.4);
+}
+
+/* Page mount + hover motion */
+@keyframes lv-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes lv-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+main, [data-tanstack-router-outlet] > * {
+  animation: lv-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Loading shimmer utility */
+@utility shimmer {
+  background: linear-gradient(90deg,
+    oklch(1 0 0 / 0.02) 0%,
+    oklch(1 0 0 / 0.08) 50%,
+    oklch(1 0 0 / 0.02) 100%);
+  background-size: 200% 100%;
+  animation: lv-shimmer 1.6s linear infinite;
+}
+
+/* Dialog / popover / dropdown get glass by default */
+[data-slot="dialog-content"],
+[data-slot="popover-content"],
+[data-slot="dropdown-menu-content"],
+[data-slot="select-content"],
+[data-slot="sheet-content"] {
+  background: linear-gradient(180deg, oklch(0.17 0.02 280 / 0.85), oklch(0.13 0.02 280 / 0.85)) !important;
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid oklch(1 0 0 / 0.10) !important;
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.08) inset,
+    0 30px 60px -20px oklch(0 0 0 / 0.6);
+}
+.light [data-slot="dialog-content"],
+.light [data-slot="popover-content"],
+.light [data-slot="dropdown-menu-content"],
+.light [data-slot="select-content"],
+.light [data-slot="sheet-content"] {
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.85), oklch(0.98 0.005 280 / 0.85)) !important;
+  border-color: oklch(0 0 0 / 0.06) !important;
+  box-shadow: 0 20px 40px -20px oklch(0 0 0 / 0.15);
+}
+
+/* Sidebar glass */
+[data-slot="sidebar-inner"], [data-slot="sidebar"] {
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+
+/* Reduce motion respect */
+@media (prefers-reduced-motion: reduce) {
+  main, [data-tanstack-router-outlet] > *,
+  button, a, input, select, textarea, [data-state] { animation: none !important; transition: none !important; }
+}
+
