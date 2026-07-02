@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as UnlockRouteImport } from './routes/unlock'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
@@ -24,6 +25,11 @@ import { Route as ApiPublicSchedulerWorkerRouteImport } from './routes/api/publi
 import { Route as ApiPublicAutopilotUploadRouteImport } from './routes/api/public/autopilot/upload'
 import { Route as ApiPublicAutopilotTickRouteImport } from './routes/api/public/autopilot/tick'
 
+const UnlockRoute = UnlockRouteImport.update({
+  id: '/unlock',
+  path: '/unlock',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
@@ -100,6 +106,7 @@ const ApiPublicAutopilotTickRoute = ApiPublicAutopilotTickRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/unlock': typeof UnlockRoute
   '/autopilot': typeof AuthenticatedAutopilotRoute
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
@@ -115,6 +122,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/unlock': typeof UnlockRoute
   '/autopilot': typeof AuthenticatedAutopilotRoute
   '/channel': typeof AuthenticatedChannelRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
+  '/unlock': typeof UnlockRoute
   '/_authenticated/autopilot': typeof AuthenticatedAutopilotRoute
   '/_authenticated/channel': typeof AuthenticatedChannelRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/auth'
+    | '/unlock'
     | '/autopilot'
     | '/channel'
     | '/dashboard'
@@ -164,6 +174,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/auth'
+    | '/unlock'
     | '/autopilot'
     | '/channel'
     | '/dashboard'
@@ -180,6 +191,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/unlock'
     | '/_authenticated/autopilot'
     | '/_authenticated/channel'
     | '/_authenticated/dashboard'
@@ -197,6 +209,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  UnlockRoute: typeof UnlockRoute
   ApiPublicAutopilotTickRoute: typeof ApiPublicAutopilotTickRoute
   ApiPublicAutopilotUploadRoute: typeof ApiPublicAutopilotUploadRoute
   ApiPublicSchedulerWorkerRoute: typeof ApiPublicSchedulerWorkerRoute
@@ -205,6 +218,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/unlock': {
+      id: '/unlock'
+      path: '/unlock'
+      fullPath: '/unlock'
+      preLoaderRoute: typeof UnlockRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth': {
       id: '/auth'
       path: '/auth'
@@ -333,6 +353,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  UnlockRoute: UnlockRoute,
   ApiPublicAutopilotTickRoute: ApiPublicAutopilotTickRoute,
   ApiPublicAutopilotUploadRoute: ApiPublicAutopilotUploadRoute,
   ApiPublicSchedulerWorkerRoute: ApiPublicSchedulerWorkerRoute,
@@ -341,13 +362,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
