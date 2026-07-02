@@ -1,0 +1,22 @@
+name: ShortForge Autopilot
+on:
+  schedule:
+    - cron: "0 * * * *" # every hour on the hour (UTC)
+  workflow_dispatch: {}
+
+jobs:
+  render-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Run autopilot
+        env:
+          AUTOPILOT_SECRET: ${{ secrets.AUTOPILOT_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: node scripts/autopilot-runner.mjs
