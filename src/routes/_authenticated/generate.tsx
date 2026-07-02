@@ -1,10 +1,19 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { generateScript, saveScriptAsDraft, type GeneratedScript } from "@/lib/scripts.functions";
-import { startVideoGeneration, generateMetadataForVideo } from "@/lib/media.functions";
-import { planAnimation } from "@/lib/animation/plan.functions";
-import { renderAnimatedShort, extForMime } from "@/lib/animation/renderer";
+import {
+  planCharacterShort,
+  generateSceneKeyframe,
+  generateSceneClip,
+  finalizeCharacterShort,
+  failCharacterShort,
+  CHARACTERS,
+  type CharacterKey,
+  type CharacterPlan,
+} from "@/lib/animation/character-short.functions";
+import { saveScriptAsDraft } from "@/lib/scripts.functions";
+import { generateMetadataForVideo } from "@/lib/media.functions";
+import { stitchClips, extForMime } from "@/lib/animation/stitcher";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,181 +22,197 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
-import { Loader2, Wand2, Copy, Save, Sparkles, Download, Youtube } from "lucide-react";
+import { CharacterPicker, CHARACTER_OPTIONS } from "@/components/CharacterPicker";
+import { SceneProgress, type SceneStep } from "@/components/SceneProgress";
+import { Loader2, Wand2, Sparkles, Download, Youtube } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/generate")({
   component: GeneratePage,
 });
 
-type Style = "animated" | "veo";
+const TONES = ["wholesome", "funny", "adventurous", "cozy", "mysterious"] as const;
 
 function GeneratePage() {
   const navigate = useNavigate();
-  const gen = useServerFn(generateScript);
+  const plan = useServerFn(planCharacterShort);
   const save = useServerFn(saveScriptAsDraft);
-  const genVideo = useServerFn(startVideoGeneration);
-  const planAnim = useServerFn(planAnimation);
+  const keyframe = useServerFn(generateSceneKeyframe);
+  const clip = useServerFn(generateSceneClip);
+  const finalize = useServerFn(finalizeCharacterShort);
+  const fail = useServerFn(failCharacterShort);
   const genMeta = useServerFn(generateMetadataForVideo);
 
-  const [niche, setNiche] = useState("");
-  const [tone, setTone] = useState("energetic and punchy");
-  const [hookStyle, setHookStyle] = useState("shocking statistic");
-  const [duration, setDuration] = useState(20);
-  const [style, setStyle] = useState<Style>("animated");
-  const [loading, setLoading] = useState(false);
-  const [script, setScript] = useState<GeneratedScript | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [generatingVideo, setGeneratingVideo] = useState(false);
+  const [characterKey, setCharacterKey] = useState<string>("ginger_cat");
+  const [customCharacter, setCustomCharacter] = useState("");
+  const [topic, setTopic] = useState("goes fishing at a sunny pond, catches a fish, brings it home and cooks it");
+  const [tone, setTone] = useState<(typeof TONES)[number]>("wholesome");
+
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
+  const [stage, setStage] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [scenes, setScenes] = useState<SceneStep[]>([]);
   const [videoRow, setVideoRow] = useState<any | null>(null);
-  const [videoError, setVideoError] = useState<string | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<CharacterPlan | null>(null);
 
-  const run = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setScript(null);
-    try {
-      const result = await gen({ data: { niche, tone, hookStyle, durationSeconds: duration } });
-      setScript(result.script);
-      toast.success("Script ready");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    } finally {
-      setLoading(false);
+  const resolveCharacter = (): string => {
+    if (characterKey === "custom") return customCharacter.trim();
+    return CHARACTERS[characterKey as CharacterKey] ?? "";
+  };
+
+  const run = async () => {
+    const character = resolveCharacter();
+    if (!character) {
+      toast.error("Describe your custom character first.");
+      return;
     }
-  };
-
-  const saveDraft = async () => {
-    if (!script) return;
-    setSaving(true);
-    try {
-      const { id } = await save({ data: { script, durationSeconds: duration } });
-      toast.success("Saved to library");
-      navigate({ to: "/library", search: { highlight: id } as never });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Save failed");
-    } finally {
-      setSaving(false);
+    if (!topic.trim()) {
+      toast.error("What is your character doing?");
+      return;
     }
-  };
+    setStatus("running");
+    setError(null);
+    setVideoRow(null);
+    setCurrentPlan(null);
+    setScenes([1, 2, 3, 4].map((n) => ({ order: n, label: `Scene ${n}`, status: "pending" })));
+    setProgress(2);
+    setStage("Planning your short with Lovable AI…");
 
-  const copy = (label: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard!", { description: label });
-  };
-
-  const copyAll = () => {
-    if (!script) return;
-    copy("All metadata", [`Title: ${script.title}`, `Hook: ${script.hook}`, `Description:\n${script.description}`, `Hashtags: ${script.hashtags.join(" ")}`, `Script:\n${script.fullVoiceover}`].join("\n\n"));
-  };
-
-  const runAnimatedGeneration = async () => {
-    if (!script) return;
-    setGeneratingVideo(true);
-    setVideoError(null);
-    setVideoRow({ generation_progress: 2, generation_stage: "Saving draft…", title: script.title, script, status: "generating_video" });
     let videoId: string | null = null;
     try {
-      // 1. Save draft row so we have an ID
-      const draft = await save({ data: { script, durationSeconds: duration } });
-      videoId = draft.id;
-      setVideoRow((prev: any) => ({ ...prev, id: draft.id }));
-
-      // 2. Plan the animation via Lovable AI (free)
-      setVideoRow((prev: any) => ({ ...prev, generation_progress: 8, generation_stage: "Planning scenes with Lovable AI…" }));
-      const plan = await planAnim({
+      // 1. Plan
+      const { plan: planned } = await plan({
         data: {
-          title: script.title,
-          scenes: script.scenes.map((s) => ({
-            order: s.order,
-            visualPrompt: s.visualPrompt,
-            voiceover: s.voiceover,
-            onScreenText: s.onScreenText,
-            durationSeconds: s.durationSeconds,
-          })),
+          characterKey,
+          characterDescription: character,
+          topic: topic.trim(),
+          tone,
+        },
+      });
+      setCurrentPlan(planned);
+
+      // 2. Save draft row
+      setStage("Saving draft…");
+      setProgress(8);
+      const scriptPayload = {
+        title: planned.title,
+        hook: planned.hook,
+        scenes: planned.scenes.map((s) => ({
+          order: s.order,
+          visualPrompt: `${s.setting}. ${s.action}. ${s.cameraShot}. ${s.mood}.`,
+          voiceover: "",
+          onScreenText: "",
+          durationSeconds: s.durationSeconds,
+        })),
+        fullVoiceover: "",
+        description: planned.description,
+        hashtags: planned.hashtags,
+        seoKeywords: planned.hashtags.map((h) => h.replace(/^#/, "").toLowerCase()),
+      };
+      const draft = await save({ data: { script: scriptPayload, durationSeconds: 20 } });
+      videoId = draft.id;
+      setVideoRow({ id: draft.id, title: planned.title, description: planned.description });
+
+      // 3. Per-scene keyframe + clip
+      const stitchInput: { url: string; order: number }[] = [];
+      for (const beat of planned.scenes) {
+        setScenes((prev) => prev.map((s) => (s.order === beat.order ? { ...s, status: "keyframe" } : s)));
+        setStage(`Scene ${beat.order} — creating keyframe…`);
+        setProgress(10 + (beat.order - 1) * 12);
+        const kf = await keyframe({
+          data: {
+            videoId: draft.id,
+            sceneOrder: beat.order,
+            characterDescription: character,
+            setting: beat.setting,
+            action: beat.action,
+            cameraShot: beat.cameraShot,
+          },
+        });
+        setScenes((prev) =>
+          prev.map((s) => (s.order === beat.order ? { ...s, thumbUrl: kf.url, status: "video" } : s)),
+        );
+        setStage(`Scene ${beat.order} — animating (this scene ~1 minute)…`);
+        setProgress(14 + (beat.order - 1) * 12);
+        const cl = await clip({
+          data: {
+            videoId: draft.id,
+            sceneOrder: beat.order,
+            imageUrl: kf.url,
+            prompt: `${character}. ${beat.action}. ${beat.mood}. Cinematic Pixar-quality animation, smooth motion, vertical 9:16.`,
+            durationSeconds: 5,
+          },
+        });
+        stitchInput.push({ url: cl.url, order: beat.order });
+        setScenes((prev) =>
+          prev.map((s) => (s.order === beat.order ? { ...s, clipUrl: cl.url, status: "done" } : s)),
+        );
+      }
+
+      // 4. Client-side stitch with CTA overlay
+      setStage("Stitching final video with SUBSCRIBE overlay…");
+      setProgress(65);
+      const { blob, durationSeconds } = await stitchClips({
+        scenes: stitchInput,
+        ctaTop: planned.cta.top,
+        ctaBottom: planned.cta.bottom,
+        onProgress: (p, s) => {
+          setProgress(p);
+          setStage(s);
         },
       });
 
-      // 3. Render to WebM in the browser
-      const blob = await renderAnimatedShort(plan, (progress, stage) => {
-        setVideoRow((prev: any) => ({ ...prev, generation_progress: progress, generation_stage: stage }));
-      });
-
-      // 4. Upload directly to Supabase storage (RLS: user folder)
-      setVideoRow((prev: any) => ({ ...prev, generation_progress: 97, generation_stage: "Uploading to library…" }));
+      // 5. Upload final
+      setStage("Uploading to your library…");
+      setProgress(96);
       const { data: userRes } = await supabase.auth.getUser();
       const uid = userRes.user?.id;
       if (!uid) throw new Error("Not signed in");
       const ext = extForMime(blob.type);
       const path = `${uid}/${draft.id}.${ext}`;
-      const { error: upErr } = await supabase.storage.from("videos").upload(path, blob, { contentType: blob.type, upsert: true });
+      const { error: upErr } = await supabase.storage
+        .from("videos")
+        .upload(path, blob, { contentType: blob.type, upsert: true });
       if (upErr) throw upErr;
       const { data: signed } = await supabase.storage.from("videos").createSignedUrl(path, 60 * 60 * 24 * 7);
+      if (!signed?.signedUrl) throw new Error("Could not sign final URL");
 
-      // 5. Update videos row → ready
-      const { error: updErr } = await supabase.from("videos").update({
-        status: "ready",
-        video_url: signed?.signedUrl ?? null,
-        video_storage_path: path,
-        file_size_bytes: blob.size,
-        duration_seconds: plan.scenes.reduce((s, x) => s + x.durationSeconds, 0),
-        generation_progress: 100,
-        generation_stage: "Video ready! 🎉",
-        error_message: null,
-      } as never).eq("id", draft.id);
-      if (updErr) throw updErr;
+      await finalize({
+        data: {
+          videoId: draft.id,
+          storagePath: path,
+          signedUrl: signed.signedUrl,
+          fileSize: blob.size,
+          durationSeconds,
+        },
+      });
 
-      // 6. Fire-and-forget metadata (thumbnail + SEO tags) — do not block success
-      genMeta({ data: { videoId: draft.id, script } }).catch(() => {});
+      genMeta({ data: { videoId: draft.id, script: scriptPayload } }).catch(() => {});
 
       const { data: row } = await supabase.from("videos").select("*").eq("id", draft.id).single();
       setVideoRow(row);
-      toast.success("Animated video ready! 🎉");
+      setStatus("done");
+      setStage("Video ready! 🎉");
+      setProgress(100);
+      toast.success("Your short is ready!");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Animated render failed";
-      setVideoError(message);
+      const message = err instanceof Error ? err.message : "Generation failed";
+      setError(message);
+      setStatus("failed");
+      setScenes((prev) => prev.map((s) => (s.status === "keyframe" || s.status === "video" ? { ...s, status: "failed" } : s)));
       if (videoId) {
-        supabase.from("videos").update({ status: "failed", error_message: message, generation_stage: "Render failed" } as never).eq("id", videoId).then(() => {});
+        try {
+          await fail({ data: { videoId, message } });
+        } catch { /* ignore */ }
       }
-      toast.error("Animated render failed", { description: message });
-    } finally {
-      setGeneratingVideo(false);
+      toast.error("Generation failed", { description: message });
     }
   };
 
-  const runVeoGeneration = async () => {
-    if (!script) return;
-    setGeneratingVideo(true);
-    setVideoError(null);
-    setVideoRow({ generation_progress: 3, generation_stage: "🔄 Generating video... This may take 2-5 minutes.", title: script.title, script, status: "generating_video" });
-    let channel: ReturnType<typeof supabase.channel> | null = null;
-    try {
-      const draft = await save({ data: { script, durationSeconds: duration } });
-      setVideoRow((prev: any) => ({ ...prev, id: draft.id }));
-      channel = supabase
-        .channel(`video-progress-${draft.id}`)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "videos", filter: `id=eq.${draft.id}` }, (payload) => {
-          setVideoRow(payload.new);
-        })
-        .subscribe();
-      const result = await genVideo({ data: { script, durationSeconds: duration, existingVideoId: draft.id } });
-      const { data: row } = await supabase.from("videos").select("*").eq("id", result.videoId).single();
-      setVideoRow(row);
-      if (result.warning) toast.warning(result.warning);
-      toast.success("Video ready! 🎉");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Video generation failed";
-      setVideoError(message);
-      toast.error("Video generation failed", { description: message });
-    } finally {
-      if (channel) supabase.removeChannel(channel);
-      setGeneratingVideo(false);
-    }
-  };
-
-  const runVideoGeneration = () => (style === "animated" ? runAnimatedGeneration() : runVeoGeneration());
+  const busy = status === "running";
+  const currentChar = CHARACTER_OPTIONS.find((c) => c.key === characterKey);
 
   return (
     <div className="mx-auto grid max-w-6xl gap-6 p-6 md:p-10 lg:grid-cols-[380px_1fr]">
@@ -196,142 +221,132 @@ function GeneratePage() {
           <Wand2 className="h-5 w-5 text-primary-glow" />
           <h2 className="font-display text-lg font-semibold">New short</h2>
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">Describe the vibe. AI writes the rest.</p>
-        <form onSubmit={run} className="mt-6 space-y-4">
+        <p className="mt-1 text-sm text-muted-foreground">
+          Pick a character, describe the story. AI writes the plan, generates 4 Pixar-style scenes, and stitches them with a SUBSCRIBE overlay.
+        </p>
+
+        <div className="mt-5 space-y-4">
           <div>
-            <Label htmlFor="niche">Niche / topic</Label>
-            <Textarea id="niche" required rows={3} placeholder="e.g. a cat trying to steal a pizza and getting caught"
-              value={niche} onChange={(e) => setNiche(e.target.value)} className="mt-1.5" />
+            <Label>Character</Label>
+            <div className="mt-1.5"><CharacterPicker value={characterKey} onChange={setCharacterKey} /></div>
           </div>
+
+          {characterKey === "custom" && (
+            <div>
+              <Label htmlFor="custom">Describe your character</Label>
+              <Textarea
+                id="custom"
+                rows={3}
+                placeholder="e.g. a chubby grey kitten with huge blue eyes wearing a red bow…"
+                value={customCharacter}
+                onChange={(e) => setCustomCharacter(e.target.value)}
+                className="mt-1.5"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">Include colors, size, clothing/accessories. More detail = more consistency across scenes.</p>
+            </div>
+          )}
+
           <div>
-            <Label htmlFor="tone">Tone</Label>
-            <Input id="tone" value={tone} onChange={(e) => setTone(e.target.value)} className="mt-1.5" />
+            <Label htmlFor="topic">What is {currentChar?.label ?? "your character"} doing?</Label>
+            <Textarea
+              id="topic"
+              rows={3}
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              className="mt-1.5"
+              placeholder="e.g. opens a lemonade stand, sells to forest animals, ends the day tired but happy"
+            />
           </div>
+
           <div>
-            <Label htmlFor="hook">Hook style</Label>
-            <Input id="hook" value={hookStyle} onChange={(e) => setHookStyle(e.target.value)} className="mt-1.5" />
+            <Label>Tone</Label>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {TONES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTone(t)}
+                  className={`rounded-full border px-3 py-1 text-xs capitalize transition-all ${tone === t ? "border-primary bg-primary/15 text-primary-glow" : "border-border/60 bg-surface/40 hover:border-border"}`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
-          <div>
-            <Label htmlFor="dur">Duration (seconds)</Label>
-            <Input id="dur" type="number" min={15} max={60} value={duration}
-              onChange={(e) => setDuration(parseInt(e.target.value) || 20)} className="mt-1.5" />
-          </div>
-          <div>
-            <Label>Video style</Label>
-            <Select value={style} onValueChange={(v) => setStyle(v as Style)}>
-              <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="animated">🎨 Animated characters (free, silent)</SelectItem>
-                <SelectItem value="veo">🎬 Realistic (Veo 3.1 · needs API key)</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">Animated renders in your browser using Lovable AI — no video-API cost, no billing.</p>
-          </div>
-          <Button type="submit" className="w-full" disabled={loading || !niche.trim()}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Generate script
+
+          <Button onClick={run} className="w-full" disabled={busy}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            {busy ? "Generating…" : "Generate short (~4 min)"}
           </Button>
-        </form>
+          <p className="text-xs text-muted-foreground">
+            Uses Lovable AI (script + keyframes) + fal.ai Kling (image-to-video). ~$0.20 of fal credit per short. Keep this tab open while it renders.
+          </p>
+        </div>
       </Card>
 
       <div className="space-y-4">
-        {loading && !script && (
-          <Card className="glass grid place-items-center p-16">
-            <Loader2 className="h-8 w-8 animate-spin text-primary-glow" />
-            <p className="mt-3 text-sm text-muted-foreground">Crafting your script…</p>
-          </Card>
-        )}
-        {!loading && !script && (
+        {status === "idle" && (
           <Card className="glass grid place-items-center p-16 text-center">
             <Wand2 className="h-8 w-8 text-primary-glow" />
-            <h3 className="mt-3 font-display text-lg font-semibold">Your script appears here</h3>
+            <h3 className="mt-3 font-display text-lg font-semibold">Ready when you are</h3>
             <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              Fill in a niche on the left, then hit Generate.
+              Pick a character, describe the story, hit Generate. You'll see the 4 scenes appear as they render.
             </p>
           </Card>
         )}
-        {script && (
-          <>
-            <Card className="glass p-6">
-              <FieldRow label="Title" onCopy={() => copy("Title", script.title)}>
-                <Input value={script.title} onChange={(e) => setScript({ ...script, title: e.target.value })} />
-              </FieldRow>
-              <FieldRow label="Hook" onCopy={() => copy("Hook", script.hook)}>
-                <Input value={script.hook} onChange={(e) => setScript({ ...script, hook: e.target.value })} />
-              </FieldRow>
-              <FieldRow label="Description" onCopy={() => copy("Description", script.description)}>
-                <Textarea rows={3} value={script.description} onChange={(e) => setScript({ ...script, description: e.target.value })} />
-              </FieldRow>
-              <FieldRow label="Hashtags" onCopy={() => copy("Hashtags", script.hashtags.join(" "))}>
-                <Input value={script.hashtags.join(" ")}
-                  onChange={(e) => setScript({ ...script, hashtags: e.target.value.split(/\s+/).filter(Boolean) })} />
-              </FieldRow>
-              <Button size="sm" variant="outline" onClick={copyAll}><Copy className="h-3.5 w-3.5" /> Copy All</Button>
-            </Card>
 
-            <Card className="glass p-6">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-display text-lg font-semibold">Scenes</h3>
-                <Button size="sm" variant="ghost" onClick={() => copy("Full voiceover", script.fullVoiceover)}>
-                  <Copy className="h-3.5 w-3.5" /> Copy full VO
-                </Button>
+        {status !== "idle" && (
+          <Card className="glass p-6">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-lg font-semibold">{currentPlan?.title ?? "Generating…"}</h3>
+                <p className="text-sm text-muted-foreground">{stage}</p>
               </div>
-              <div className="space-y-3">
-                {script.scenes.map((scene, i) => (
-                  <div key={i} className="rounded-lg border border-border/60 bg-surface/40 p-4">
-                    <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-                      <span>Scene {scene.order} · {scene.durationSeconds}s</span>
-                    </div>
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Visual</p>
-                    <p className="mt-1 text-sm">{scene.visualPrompt}</p>
-                    <p className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Voiceover</p>
-                    <p className="mt-1 text-sm">{scene.voiceover}</p>
-                    <p className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">On-screen text</p>
-                    <p className="mt-1 text-sm">{scene.onScreenText}</p>
-                  </div>
-                ))}
-              </div>
-            </Card>
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={saveDraft} disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Save to library
-              </Button>
-              <Button variant="outline" onClick={runVideoGeneration} disabled={generatingVideo}>
-                {generatingVideo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                {style === "animated" ? "Render animated video" : "Generate Veo video"}
-              </Button>
+              <Badge variant={status === "failed" ? "destructive" : "default"}>{status}</Badge>
             </div>
-
-            {(videoRow || videoError) && (
-              <Card className="glass p-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div><h3 className="font-display text-lg font-semibold">Video generation</h3><p className="text-sm text-muted-foreground">{videoRow?.generation_stage || videoError}</p></div>
-                  {videoRow?.status && <Badge>{videoRow.status}</Badge>}
-                </div>
-                {generatingVideo && <div className="space-y-2"><Progress value={videoRow?.generation_progress || 8} /><p className="text-sm">{style === "animated" ? "🎨 Rendering in your browser — keep this tab open." : "🔄 Generating video... This may take 2-5 minutes."}</p></div>}
-                {videoError && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm"><p>{videoError}</p><Button className="mt-3" size="sm" onClick={runVideoGeneration}>Retry</Button></div>}
-                {videoRow?.video_url && <div className="mt-4 grid gap-4 md:grid-cols-[260px_1fr]"><video src={videoRow.video_url} controls className="aspect-[9/16] w-full rounded-xl border border-border object-cover" /><div className="space-y-3"><p className="font-medium">{videoRow.title}</p><p className="whitespace-pre-wrap text-sm text-muted-foreground">{videoRow.description}</p><div className="flex flex-wrap gap-2"><a href={videoRow.video_url} download className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent"><Download className="h-4 w-4" /> Download</a><UploadToYouTubeDialog video={videoRow}><Button><Youtube className="h-4 w-4" />Upload to YouTube</Button></UploadToYouTubeDialog></div></div></div>}
-              </Card>
+            {busy && <Progress value={progress} className="mb-4" />}
+            <SceneProgress scenes={scenes} />
+            {error && (
+              <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm">
+                <p className="font-medium">Something went wrong</p>
+                <p className="mt-1 text-muted-foreground">{error}</p>
+                <Button className="mt-3" size="sm" onClick={run}>Retry</Button>
+              </div>
             )}
-          </>
+          </Card>
+        )}
+
+        {videoRow?.video_url && (
+          <Card className="glass p-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+              <video
+                src={videoRow.video_url}
+                controls
+                className="aspect-[9/16] w-full rounded-xl border border-border object-cover bg-black"
+              />
+              <div className="space-y-3">
+                <p className="font-display text-lg font-semibold">{videoRow.title}</p>
+                <p className="whitespace-pre-wrap text-sm text-muted-foreground">{videoRow.description}</p>
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <a
+                    href={videoRow.video_url}
+                    download
+                    className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent"
+                  >
+                    <Download className="h-4 w-4" /> Download
+                  </a>
+                  <UploadToYouTubeDialog video={videoRow}>
+                    <Button>
+                      <Youtube className="h-4 w-4" />Upload to YouTube
+                    </Button>
+                  </UploadToYouTubeDialog>
+                  <Button variant="outline" onClick={() => navigate({ to: "/library" })}>Open library</Button>
+                </div>
+              </div>
+            </div>
+          </Card>
         )}
       </div>
-    </div>
-  );
-}
-
-function FieldRow({ label, onCopy, children }: { label: string; onCopy: () => void; children: React.ReactNode }) {
-  return (
-    <div className="mb-4">
-      <div className="mb-1.5 flex items-center justify-between">
-        <Label>{label}</Label>
-        <button type="button" onClick={onCopy} className="text-xs text-muted-foreground hover:text-foreground">
-          <Copy className="inline h-3 w-3" /> Copy
-        </button>
-      </div>
-      {children}
     </div>
   );
 }
