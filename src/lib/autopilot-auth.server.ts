@@ -18,12 +18,12 @@ type GithubOidcClaims = {
 
 let jwksCache: { keys: GithubJwk[]; expiresAt: number } | undefined;
 
-function base64UrlToBytes(value: string): Uint8Array {
+function base64UrlToBytes(value: string): ArrayBuffer {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 function parseJwtPart<T>(value: string): T {
