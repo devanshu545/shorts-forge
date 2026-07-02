@@ -285,7 +285,7 @@ export const finalizeCharacterShort = createServerFn({ method: "POST" })
         video_url: data.signedUrl,
         video_storage_path: data.storagePath,
         file_size_bytes: data.fileSize,
-        duration_seconds: data.durationSeconds,
+        duration_seconds: Math.round(data.durationSeconds),
         generation_progress: 100,
         generation_stage: "Video ready! 🎉",
         error_message: null,
