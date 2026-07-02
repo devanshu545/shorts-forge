@@ -246,7 +246,7 @@ async function processJob(job) {
   const fontfile = FONT_PATH.replace(/:/g, "\\:");
   run("ffmpeg", ["-y", "-i", scenes[0].img, "-vf",
     `scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,` +
-    `drawbox=x=0:y=h*0.55:w=iw:h=h*0.45:color=black@0.65:t=fill,` +
+    `drawbox=x=0:y=ih*0.55:w=iw:h=ih*0.45:color=black@0.65:t=fill,` +
     `drawtext=fontfile='${fontfile}':text='${thumbText}':fontcolor=yellow:fontsize=96:borderw=6:bordercolor=black:x=(w-text_w)/2:y=h*0.60,` +
     `drawtext=fontfile='${fontfile}':text='${escDrawtext(CHANNEL_HANDLE)}':fontcolor=white:fontsize=44:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-30`,
     "-q:v", "3", thumb]);
