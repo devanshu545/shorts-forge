@@ -123,7 +123,10 @@ async function handler(request: Request): Promise<Response> {
     if (utcHour === null) continue;
 
     const slotKey = currentSlotKey(utcHour);
-    const slotISO = new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
+    const slotISO = force
+      ? new Date().toISOString()
+      : new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
+
 
     if (!force) {
       const { data: existing } = await supabaseAdmin
