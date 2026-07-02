@@ -93,21 +93,57 @@ async function generateTtsBase64(text: string, voice: string): Promise<string> {
   return Buffer.from(await res.arrayBuffer()).toString("base64");
 }
 
-function currentSlotKey(hour: number) {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}-${String(hour).padStart(2, "0")}`;
+function currentSlotKey(slotISO: string) {
+  return slotISO;
 }
 
-function isSlotDue(slotHours: number[], timezone: string): number | null {
-  // Compute current hour in user's timezone; if it matches a slot, return that hour (UTC-marked as slot key).
+// Returns the matched slot time "HH:MM" if the current local time (in tz) is
+// within ±5 minutes of any slot_time entry; else null.
+function isSlotDue(slotTimes: string[], pauseDays: number[], timezone: string): string | null {
   try {
     const now = new Date();
-    const fmt = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, timeZone: timezone });
-    const localHour = Number(fmt.format(now));
-    if (slotHours.includes(localHour)) return now.getUTCHours();
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, hour: "2-digit", minute: "2-digit", weekday: "short", hour12: false,
+    }).formatToParts(now);
+    const wdMap: Record<string, number> = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+    const wd = parts.find((p) => p.type === "weekday")?.value;
+    if (wd && pauseDays.includes(wdMap[wd])) return null;
+    const hh = Number(parts.find((p) => p.type === "hour")?.value ?? "-1");
+    const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "-1");
+    if (hh < 0 || mm < 0) return null;
+    const nowMin = hh * 60 + mm;
+    for (const t of slotTimes) {
+      const [sh, sm] = t.split(":").map(Number);
+      const slotMin = sh * 60 + sm;
+      if (Math.abs(nowMin - slotMin) <= 5) return `${String(sh).padStart(2,"0")}:${String(sm).padStart(2,"0")}`;
+    }
   } catch {}
   return null;
 }
+
+// Build a stable slot ISO for "today at HH:MM local" in the user's tz.
+function slotISOForToday(hhmm: string, timezone: string): string {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  const probe = new Date(`${y}-${m}-${d}T${hhmm}:00Z`);
+  const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", hour12: false });
+  const tzOffsetMinutes = (Number(dtf.format(probe)) - probe.getUTCHours()) * 60;
+  return new Date(probe.getTime() - tzOffsetMinutes * 60_000).toISOString();
+}
+
+const STYLE_PROMPTS: Record<string, string> = {
+  pixar: "Professional Pixar-quality 3D animated still, ultra-detailed 8k render, dramatic cinematic lighting, shallow depth of field with dreamy bokeh, rich color grading",
+  anime: "Studio Ghibli inspired 2D anime cel-shaded illustration, ultra-detailed, soft painterly backgrounds, warm color palette, cinematic composition",
+  clay: "Stop-motion claymation still, tactile plasticine textures, hand-crafted charm, soft studio lighting, shallow depth of field",
+  paper: "Paper cutout craft illustration, layered construction paper textures, soft shadows, warm storybook lighting",
+  noir: "Cinematic film-noir 3D render, moody chiaroscuro lighting, deep contrast, dramatic rim light, muted color palette",
+};
+
 
 async function handler(request: Request): Promise<Response> {
   const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
