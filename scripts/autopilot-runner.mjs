@@ -165,6 +165,23 @@ async function main() {
   }
 
   console.log("Scheduled mode: checking due upload slots.");
+  try {
+    const retryRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+      body: JSON.stringify({ privacy: "public", onlyAutopilot: true }),
+    });
+    const retryText = await retryRes.text();
+    let retryJson = null;
+    try { retryJson = JSON.parse(retryText); } catch {}
+    if (retryRes.ok && retryJson?.ok) {
+      console.log(`Retried pending autopilot upload: ${retryJson.youtubeUrl}`);
+    } else {
+      console.log(`No pending rendered autopilot upload to retry: ${retryJson?.error || retryText.slice(0, 300)}`);
+    }
+  } catch (retryErr) {
+    console.log("Pending upload retry check failed; continuing to due slot generation:", retryErr instanceof Error ? retryErr.message : retryErr);
+  }
   const endpoint = `${BASE}/api/public/autopilot/tick?limit=5`;
   const tickRes = await fetch(endpoint, {
     method: "POST",

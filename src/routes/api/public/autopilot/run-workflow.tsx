@@ -5,6 +5,7 @@ const BodySchema = z.object({
   videoId: z.string().uuid().optional(),
   userId: z.string().uuid().optional(),
   privacy: z.enum(["public", "unlisted", "private"]).default("public"),
+  onlyAutopilot: z.boolean().default(false),
 }).default({ privacy: "public" });
 
 async function parseBody(request: Request) {
@@ -27,6 +28,7 @@ async function handler(request: Request): Promise<Response> {
   const requestedVideoId = url.searchParams.get("videoId") || body.videoId;
   const requestedUserId = url.searchParams.get("user") || body.userId;
   const privacy = (url.searchParams.get("privacy") || body.privacy) as "public" | "unlisted" | "private";
+  const onlyAutopilot = url.searchParams.get("autopilot") === "1" || body.onlyAutopilot;
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
   try {
@@ -53,10 +55,15 @@ async function handler(request: Request): Promise<Response> {
         .order("created_at", { ascending: false })
         .limit(20);
       if (requestedUserId) query = query.eq("user_id", requestedUserId);
+      if (onlyAutopilot) query = query.not("autopilot_slot", "is", null);
       const { data, error } = await query;
       if (error) throw new Error(error.message);
       target = (data || []).find((video) => Boolean(video.video_storage_path || video.video_url)) ?? null;
-      if (!target) throw new Error("No ready test video found. Click Test Flow in the app first, wait for the preview, then run GitHub workflow again.");
+      if (!target) {
+        throw new Error(onlyAutopilot
+          ? "No rendered autopilot video is waiting for upload. Continuing with due slot generation."
+          : "No ready test video found. Click Test Flow in the app first, wait for the preview, then run GitHub workflow again.");
+      }
     }
 
     const { uploadExistingVideoToYouTube } = await import("@/lib/youtube-upload.server");
@@ -75,7 +82,7 @@ async function handler(request: Request): Promise<Response> {
 
     return Response.json({
       ok: true,
-      mode: "manual-upload-existing-test-video",
+      mode: onlyAutopilot ? "scheduled-retry-existing-autopilot-video" : "manual-upload-existing-test-video",
       videoId: target.id,
       youtubeVideoId: uploaded.youtubeVideoId,
       youtubeUrl: uploaded.url,
