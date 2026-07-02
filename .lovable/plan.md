@@ -1,89 +1,109 @@
 ## Goal
 
-Make every auto-uploaded Short look expensive so viewers stop scrolling, watch to the end, and subscribe to **@CraftWebStudio**. All upgrades are free, use only tools already wired in (ffmpeg + Lovable AI TTS + Pollinations), and stay stable long-term (no external paid API, no key expiry, no fragile dependency).
+1. **Instagram Reels** upload runs on the exact same rails as YouTube — manual "Run workflow" *and* the 3/day autopilot cron will publish to **both** platforms per Short, with platform-tailored captions.
+2. **Dynamic time picker** in `/autopilot`: add / remove any number of HH:MM slots; save applies immediately (cron already runs hourly, we just tighten the "is-a-slot-due" check to minute precision).
 
-## Why current Shorts feel cheap
+---
 
-Reading `scripts/autopilot-runner.mjs` and `tick.tsx`:
+## Part A — Instagram integration
 
-1. Only 4 static images with slow Ken-Burns zoom — no motion between scenes.
-2. Hard-cut concat between scenes (jarring, amateur).
-3. Only text on screen is a yellow `SUBSCRIBE` box in the default ffmpeg font (looks like a 2012 meme).
-4. No captions synced to the voiceover — the #1 retention killer on Shorts. Every top channel has bouncing word-by-word subs.
-5. No music bed under the narration.
-6. 720×1280 output.
-7. No hook card in the first 1.5s (viewers decide to swipe by second 2).
-8. No progress bar (a proven retention trick).
+### What Meta requires (I'll walk you through it once, then it just works)
 
-## What I'll add (all zero-cost, all stable)
+You'll create these once in developers.facebook.com — I'll give exact clicks in an in-app setup card:
 
-### 1. Word-by-word animated captions ("karaoke style")
+1. **Facebook Page** connected to your **Instagram Business** account (2-min conversion inside the IG app: Settings → Account type → Switch to Business, then link the FB Page).
+2. **Meta Developer App** (type "Business"), add product **Instagram Graph API**.
+3. Generate a **long-lived Page Access Token** (60 days) — we auto-refresh it before expiry using the same token endpoint (Meta lets long-lived tokens be re-extended indefinitely as long as they're used).
+4. Copy: **App ID**, **App Secret**, **Instagram Business Account ID**, **Long-lived Page Token**.
 
-The single biggest quality lift. Because we generate the TTS ourselves from a known script line per scene, we already know the exact words and the exact audio duration (from `ffprobe`). Split words evenly across the clip's duration and burn them in with ffmpeg `drawtext` — one active word big + yellow + slight pop-scale, previous/next words dim. No transcription service, no key, deterministic.
+### What I'll build in the app
 
-Rendered with a bold display font committed to the repo (`assets/fonts/Anton-Regular.ttf`, ~40KB, SIL Open Font License — free forever, no attribution needed in-video).
+**New secrets** (stored via add_secret): `META_APP_ID`, `META_APP_SECRET`. Per-user tokens live in a new table below.
 
-### 2. Cinematic scene transitions
+**New table** `instagram_connections` (parallel to `youtube_connections`):
+- `user_id`, `ig_business_account_id`, `fb_page_id`, `page_access_token`, `token_expires_at`, `username`, `followers_count`, `updated_at`
+- RLS: user reads own row; service_role full access.
 
-Replace the raw `concat` between the 4 clips with ffmpeg `xfade` transitions (rotate through `fade`, `slideleft`, `circleopen`, `dissolve`) — 0.4s crossfades. This alone makes the video feel professionally edited.
+**New page** `/instagram` (mirrors `/channel`): "Connect Instagram" button opens a small in-app wizard (paste IG Business Account ID + Page Token; we validate by calling `/me/accounts` and `/{ig-id}?fields=username,followers_count`). Shows connected username, follower count, disconnect button.
 
-### 3. Music bed under the narration
+**Upload flow** (`src/lib/instagram-upload.server.ts`, mirrors `youtube-upload.server.ts`):
+Meta's Reels upload is a **2-step container flow**:
+1. `POST /{ig-id}/media` with `media_type=REELS`, `video_url=<signed Supabase URL>`, `caption=<ig caption>`, `share_to_feed=true` → returns container ID.
+2. Poll `GET /{container-id}?fields=status_code` until `FINISHED` (usually 15–60s).
+3. `POST /{ig-id}/media_publish?creation_id=<container-id>` → returns IG media ID.
 
-Commit 5 short royalty-free instrumental beds (~30s each, mono 96kbps ≈ 350KB each, total ~1.7MB) under `assets/music/` — tracks sourced from freepd.com / CC0 (no attribution, safe on YouTube, no Content ID risk). Runner picks one per video (seeded by videoId) and ducks it under the voiceover via ffmpeg `sidechaincompress` so narration is always crystal clear.
+The video must be publicly reachable — we already sign Supabase storage URLs for 7 days for YouTube, we'll reuse the same signed URL.
 
-### 4. Hero hook card (first 1.2 seconds)
+**Wire into existing paths** (no duplicated pipeline):
+- `src/routes/api/public/autopilot/upload.tsx` — after the YouTube upload block, run a parallel IG upload block (independent try/catch, independent notification, independent error field on the video row).
+- `src/routes/api/public/autopilot/run-workflow.tsx` — same: after `uploadExistingVideoToYouTube`, call `uploadExistingReelToInstagram`. Query param `platforms=yt,ig` (default both) lets manual runs target one.
+- `src/components/UploadToYouTubeDialog.tsx` → rename to `PublishDialog.tsx` with two checkboxes: **YouTube** / **Instagram** (only enabled if connected), pre-checked when connected.
 
-Overlay the plan's `hook` text full-bleed in the display font on scene 1 for 1.2s (animated slide-in from bottom via `drawtext` with `enable=between(t,0,1.2)` + y-position expression). This is what stops the swipe.
+### Platform-tailored content (generated once, formatted twice)
 
-### 5. Bottom progress bar
+`tick.tsx` planner already returns `title`, `description`, `tags`, `hashtags`, `hook`. I'll extend the plan schema with:
+- `ig_caption` — expanded 2–3 sentence storytelling version of the hook + description, emoji-heavy, ending with **"Follow @<your_ig_handle> for daily stories 👇"** (handle comes from `instagram_connections.username`).
+- `ig_hashtags` — up to 30 IG-native tags (`#reels #reelsinstagram #explorepage #viralreels #storytime` merged with topic tags).
 
-Thin animated bar at the very bottom (drawn via ffmpeg `drawbox` with width as a function of `t/total`) — subconsciously tells viewers "almost done, keep watching". Used by every viral shorts editor.
+YouTube keeps its existing title / description / tags / `@CraftWebStudio` CTA — nothing changes on that side.
 
-### 6. Cleaner end card
+New DB columns on `videos`: `instagram_media_id`, `instagram_permalink`, `instagram_error`, `ig_caption`, `ig_hashtags`.
 
-Replace the giant yellow SUBSCRIBE box with a two-line composition:
-- Small avatar/emoji on left ("👇")
-- "Subscribe to @CraftWebStudio" in the display font
-- Animated red pulsing subscribe button (drawbox alpha oscillating with `sin(2*PI*t)`)
+### Schema columns to add (one migration)
 
-Kept for the last 2.5s.
+- `videos.instagram_media_id text`, `videos.instagram_permalink text`, `videos.instagram_error text`, `videos.ig_caption text`, `videos.ig_hashtags text[]`
+- `instagram_connections` table (see above) + GRANT + RLS + policy `user_id = auth.uid()`.
+- `autopilot_settings.slot_minutes int[]` (parallel array to `slot_hours`, defaults to zeros for existing rows) — for HH:MM precision.
 
-### 7. Sharper output
+---
 
-Bump ffmpeg output to `1080×1920`, `-preset medium`, `-crf 20`, `-b:a 160k`. YouTube Shorts serves this size directly — no more soft upscale.
+## Part B — Dynamic HH:MM time picker
 
-### 8. Better character-image prompts
+**UI** (`src/routes/_authenticated/autopilot.tsx`):
+- Replace the fixed 3-slot hour selector with a dynamic list:
+  - "+ Add slot" button (no upper cap in UI; soft-warn above 10/day).
+  - Each row: HH `Select` (00–23) + MM `Select` (00, 15, 30, 45) + trash button.
+  - "Save" writes both `slot_hours` and `slot_minutes` arrays; toast "Schedule applied — next slot: HH:MM in your timezone".
+- Health card's "Next 3 slots" already uses `computeUpcomingSlots` — I'll extend it to use minute precision.
 
-Small prompt refactor in `tick.tsx`: add "professional Pixar-quality character sheet, dramatic cinematic lighting, shallow depth of field, ultra-detailed, 8k render, subject perfectly centered in safe area for vertical video" and negative-style hints ("no text, no logo, no watermark, no border") — same Pollinations endpoint, same seed logic, just better prompts. Free.
+**Backend** (`src/lib/autopilot.functions.ts` + `tick.tsx`):
+- `saveAutopilotSettings` schema: add `slot_minutes: z.array(z.number().int().min(0).max(59))` matching `slot_hours` length. Zod refine: same length.
+- `computeUpcomingSlots(slot_hours, slot_minutes, tz)` — build slots with minute precision.
+- `tick.tsx` due-slot check: current window is "within 60 min of a slot hour"; tighten to "within ±30 min of any (h,m) slot" so a 14:15 slot fires from the 14:00 cron run (which is the closest hourly tick) — this keeps the free hourly GitHub cron and still gives you minute-level scheduling within ~30 min accuracy. If you want exact-to-the-minute, we'd need to move the GitHub workflow cron from `0 * * * *` to `*/15 * * * *`, which is still free — I'll do that in the same change so slots align to 15-min quantization exactly.
 
-### 9. Better SEO on upload
+`videos_per_day` is derived from `slot_hours.length`, so we drop the separate `videos_per_day` selector.
 
-In `autopilot-runner.mjs` upload body: append the hook as the very first line of the description (YT search weights this heavily), add `@CraftWebStudio` mention, and inject 3 broad tags always ("shorts fyp", "viral shorts", "storytime shorts") alongside the plan-derived ones.
+---
 
 ## Files to change
 
 | File | Change |
 |---|---|
-| `assets/fonts/Anton-Regular.ttf` | new — display font (SIL OFL) |
-| `assets/music/bed-1.mp3` ... `bed-5.mp3` | new — 5 royalty-free instrumental beds |
-| `assets/music/README.md` | new — track sources + license note |
-| `scripts/autopilot-runner.mjs` | rewrite render pipeline: 1080p, xfade transitions, karaoke captions, music bed with sidechain duck, hook card, progress bar, new end card, better description/tags |
-| `src/routes/api/public/autopilot/tick.tsx` | upgrade image prompt template only (unchanged flow) |
+| `supabase migration` | new table `instagram_connections`, new columns on `videos` + `autopilot_settings.slot_minutes` |
+| `src/lib/instagram-upload.server.ts` | new — Reels container + publish + poll |
+| `src/lib/instagram.functions.ts` | new — connect/disconnect/getConnection server fns |
+| `src/routes/_authenticated/instagram.tsx` | new — connect page mirroring `/channel` |
+| `src/components/app-sidebar.tsx` | add Instagram link |
+| `src/components/UploadToYouTubeDialog.tsx` → `PublishDialog.tsx` | dual-platform checkboxes |
+| `src/routes/api/public/autopilot/tick.tsx` | plan schema adds `ig_caption` + `ig_hashtags`; minute-precision due check |
+| `src/routes/api/public/autopilot/upload.tsx` | parallel IG upload after YT |
+| `src/routes/api/public/autopilot/run-workflow.tsx` | `platforms` param, IG branch |
+| `scripts/autopilot-runner.mjs` | pass through platforms flag; IG uses signed Supabase URL (no re-download) |
+| `src/lib/autopilot.functions.ts` | `slot_minutes` in schema + `computeUpcomingSlots` |
+| `src/routes/_authenticated/autopilot.tsx` | dynamic HH:MM slot editor + health card update |
+| `.github/workflows/autopilot.yml` | cron `*/15 * * * *` for minute-precision |
 
-No schema changes. No new secrets. No new npm packages. No new API dependencies.
+---
 
-## Verification (I will not stop until all green)
+## Cost / long-term stability
 
-1. Run the GitHub workflow with `force_test=true` after deploy.
-2. Download the rendered mp4 from the run's artifacts / YouTube.
-3. Screenshot check: hook card visible frame 1, captions animate word by word in sync with narration, transitions crossfade, music audible under VO but ducks when narrator speaks, progress bar fills to the right, end card shows @CraftWebStudio.
-4. Confirm YouTube description starts with hook line and tags include the 3 broad ones.
-5. Confirm total run time on GitHub Actions still under the free-tier minutes budget.
-6. Repeat one more forced run to confirm music picker rotates and captions still align on a different script.
+- Meta Graph API for Reels: **free**, no quota you'll hit at 3/day.
+- Long-lived tokens: 60 days, auto-extended on use — I'll add a weekly refresh call in `tick.tsx` (already runs hourly) so tokens never expire silently.
+- No new npm packages, no new paid services.
+- If IG upload fails, YT still succeeds independently and vice versa — you're never blocked by one platform.
 
-## Long-term safety
+---
 
-- Fonts and music are committed to the repo → immortal, no CDN can break them.
-- ffmpeg is preinstalled on GitHub's `ubuntu-latest` runners → Microsoft maintains it.
-- Pollinations + Lovable AI TTS are already the only external calls and are already error-handled with retries.
-- No paid provider added, no key to rotate, no quota to exhaust beyond what you already run.
+## What I need from you before I build
+
+Just your **Instagram handle** (e.g. `@craftwebstudio`) so I can hardcode the "Follow @…" CTA into the IG caption template. Everything else (App ID, Secret, Page Token, IG Business Account ID) you'll paste into the in-app connect form after the code is live — no need to share them here.
