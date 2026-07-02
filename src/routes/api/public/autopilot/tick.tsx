@@ -125,13 +125,16 @@ async function handler(request: Request): Promise<Response> {
     const slotKey = currentSlotKey(utcHour);
     const slotISO = new Date(`${slotKey.slice(0, 10)}T${slotKey.slice(11)}:00:00Z`).toISOString();
 
-    const { data: existing } = await supabaseAdmin
-      .from("videos")
-      .select("id")
-      .eq("user_id", s.user_id)
-      .eq("autopilot_slot", slotISO)
-      .maybeSingle();
-    if (existing) continue;
+    if (!force) {
+      const { data: existing } = await supabaseAdmin
+        .from("videos")
+        .select("id")
+        .eq("user_id", s.user_id)
+        .eq("autopilot_slot", slotISO)
+        .maybeSingle();
+      if (existing) continue;
+    }
+
 
     try {
       // Pick topic
