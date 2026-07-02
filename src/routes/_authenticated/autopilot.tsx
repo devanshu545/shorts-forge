@@ -66,6 +66,11 @@ function AutopilotPage() {
     queryKey: ["autopilot-latest-test"],
     queryFn: () => latestTestFn(),
   });
+  const { data: health } = useQuery({
+    queryKey: ["autopilot-health"],
+    queryFn: () => healthFn(),
+    refetchInterval: 60000,
+  });
 
   const [form, setForm] = useState({
     enabled: false,
