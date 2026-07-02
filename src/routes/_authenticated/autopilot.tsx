@@ -20,6 +20,7 @@ import {
   listAutopilotVideos,
   pickAutopilotTopic,
   getLatestAutopilotTestVideo,
+  getAutopilotHealth,
 } from "@/lib/autopilot.functions";
 import {
   planCharacterShort,
