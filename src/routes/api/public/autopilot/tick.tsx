@@ -110,9 +110,8 @@ function isSlotDue(slotHours: number[], timezone: string): number | null {
 }
 
 async function handler(request: Request): Promise<Response> {
-  const secrets = [process.env.AUTOPILOT_SECRET, process.env.AUTOPILOT_SECRET_GITHUB].filter(Boolean);
-  const provided = request.headers.get("x-autopilot-secret") || new URL(request.url).searchParams.get("secret");
-  if (!provided || !secrets.includes(provided)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
+  if (!(await isAutopilotRequestAuthorized(request))) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 3);

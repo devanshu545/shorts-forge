@@ -13,8 +13,27 @@ if (configuredBase.includes("id-preview--")) {
 }
 const BASE = configuredBase.replace(/\/+$/, "");
 const SECRET = process.env.AUTOPILOT_SECRET;
-if (!SECRET) { console.error("AUTOPILOT_SECRET missing"); process.exit(1); }
 const FORCE = process.env.AUTOPILOT_FORCE === "1" || process.argv.includes("--force");
+async function getGithubOidcToken() {
+  const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!requestUrl || !requestToken) return null;
+  const separator = requestUrl.includes("?") ? "&" : "?";
+  const res = await fetch(`${requestUrl}${separator}audience=shortforge-autopilot`, {
+    headers: { Authorization: `Bearer ${requestToken}` },
+  });
+  if (!res.ok) throw new Error(`GitHub OIDC token request failed: HTTP ${res.status}`);
+  const body = await res.json();
+  return typeof body.value === "string" ? body.value : null;
+}
+
+async function autopilotHeaders(extra = {}) {
+  const headers = { ...extra };
+  const oidcToken = await getGithubOidcToken();
+  if (oidcToken) headers.Authorization = `Bearer ${oidcToken}`;
+  if (SECRET) headers["x-autopilot-secret"] = SECRET;
+  return headers;
+}
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe", ...opts });
@@ -116,7 +135,7 @@ async function processJob(job) {
 
   const uploadRes = await fetch(`${BASE}/api/public/autopilot/upload`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+    headers: await autopilotHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       videoId: job.videoId,
       userId: job.userId,
@@ -146,7 +165,7 @@ async function main() {
     console.log("Manual test mode: uploading the latest ready Test Flow video. No new generation will run.");
     const runRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+      headers: await autopilotHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ privacy: "public" }),
     });
     const runText = await runRes.text();
@@ -156,7 +175,7 @@ async function main() {
     if (!runRes.ok || runJson?.ok === false) {
       console.error(`Run workflow failed HTTP ${runRes.status}`);
       console.error(`Response body: ${runText.slice(0, 2000)}`);
-      if (runRes.status === 401) console.error("Fix: GitHub AUTOPILOT_SECRET does not match the app secret.");
+      if (runRes.status === 401) console.error("Fix: publish the latest app changes and make sure this workflow has id-token: write permission.");
       throw new Error(runJson?.error || `Run workflow failed ${runRes.status}`);
     }
     console.log(`✅ Uploaded to YouTube! Video ID: ${runJson.youtubeVideoId}`);
@@ -168,7 +187,7 @@ async function main() {
   try {
     const retryRes = await fetch(`${BASE}/api/public/autopilot/run-workflow`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-autopilot-secret": SECRET },
+      headers: await autopilotHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ privacy: "public", onlyAutopilot: true }),
     });
     const retryText = await retryRes.text();
@@ -185,14 +204,14 @@ async function main() {
   const endpoint = `${BASE}/api/public/autopilot/tick?limit=5`;
   const tickRes = await fetch(endpoint, {
     method: "POST",
-    headers: { "x-autopilot-secret": SECRET },
+    headers: await autopilotHeaders(),
   });
   const tickText = await tickRes.text();
   if (!tickRes.ok) {
     console.error(`Tick failed HTTP ${tickRes.status}`);
     console.error(`Response body: ${tickText.slice(0, 2000)}`);
     if (tickRes.status === 401) {
-      console.error("Fix: GitHub AUTOPILOT_SECRET does not match the app secret, or the app secret is missing.");
+      console.error("Fix: publish the latest app changes and make sure this workflow has id-token: write permission.");
     }
     if (tickText.trim().startsWith("<")) {
       console.error("Fix: APP_BASE_URL is pointing to the wrong site. Use the published Lovable URL only, with no path.");
