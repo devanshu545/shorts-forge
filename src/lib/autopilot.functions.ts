@@ -1,6 +1,61 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import { pickTrendingTopic } from "@/lib/trending.server";
+import { CHARACTERS } from "@/lib/animation/character-short.functions";
+
+export const pickAutopilotTopic = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data: s } = await context.supabase
+      .from("autopilot_settings")
+      .select("*")
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    const settings = s ?? null;
+    const mode = settings?.topic_mode ?? "trending";
+    const niche = settings?.niche?.trim() || "";
+    let storyPrompt = "";
+    let source = "fallback";
+    let rawTopic = "";
+    if (mode === "niche" && niche) {
+      storyPrompt = niche; rawTopic = niche; source = "niche";
+    } else if (mode === "mix" && niche && Math.random() < 0.5) {
+      storyPrompt = niche; rawTopic = niche; source = "niche";
+    } else {
+      const t = await pickTrendingTopic(Date.now());
+      storyPrompt = t.storyPrompt; rawTopic = t.rawTopic; source = t.source;
+    }
+    const characterKey = settings?.character_key ?? "ginger_cat";
+    const characterDescription = (CHARACTERS as Record<string, string>)[characterKey] ?? CHARACTERS.ginger_cat;
+    return {
+      storyPrompt,
+      rawTopic,
+      source,
+      characterKey,
+      characterDescription,
+      tone: settings?.tone ?? "wholesome and funny",
+      voice: settings?.voice ?? "alloy",
+      privacy: (settings?.privacy ?? "public") as "public" | "unlisted" | "private",
+    };
+  });
+
+export const getLatestAutopilotTestVideo = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data, error } = await context.supabase
+      .from("videos")
+      .select("id,title,description,tags,hashtags,video_url,thumbnail_url,youtube_video_id,status,created_at")
+      .eq("user_id", context.userId)
+      .eq("status", "ready")
+      .is("youtube_video_id", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data;
+  });
+
 
 const TestSchema = z.object({ baseUrl: z.string().url() });
 

@@ -10,12 +10,33 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Rocket, Loader2, Save, Sparkles, PlayCircle } from "lucide-react";
+import { Rocket, Loader2, Save, Sparkles, PlayCircle, Youtube, Download } from "lucide-react";
 import { toast } from "sonner";
-import { getAutopilotSettings, saveAutopilotSettings, listAutopilotVideos, runAutopilotTestNow } from "@/lib/autopilot.functions";
-import { CHARACTERS, VOICES } from "@/lib/animation/character-short.functions";
-
+import {
+  getAutopilotSettings,
+  saveAutopilotSettings,
+  listAutopilotVideos,
+  pickAutopilotTopic,
+  getLatestAutopilotTestVideo,
+} from "@/lib/autopilot.functions";
+import {
+  planCharacterShort,
+  generateSceneKeyframe,
+  generateSceneVoiceover,
+  finalizeCharacterShort,
+  failCharacterShort,
+  CHARACTERS,
+  VOICES,
+  type CharacterPlan,
+  type VoiceKey,
+} from "@/lib/animation/character-short.functions";
+import { saveScriptAsDraft } from "@/lib/scripts.functions";
+import { generateMetadataForVideo } from "@/lib/media.functions";
+import { runCharacterShortPipeline } from "@/lib/animation/pipeline";
+import { SceneProgress, type SceneStep } from "@/components/SceneProgress";
+import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 
 export const Route = createFileRoute("/_authenticated/autopilot")({ component: AutopilotPage });
 
@@ -26,11 +47,23 @@ function AutopilotPage() {
   const getFn = useServerFn(getAutopilotSettings);
   const saveFn = useServerFn(saveAutopilotSettings);
   const listFn = useServerFn(listAutopilotVideos);
-  const testFn = useServerFn(runAutopilotTestNow);
+  const pickTopicFn = useServerFn(pickAutopilotTopic);
+  const latestTestFn = useServerFn(getLatestAutopilotTestVideo);
 
+  const planFn = useServerFn(planCharacterShort);
+  const saveScriptFn = useServerFn(saveScriptAsDraft);
+  const keyframeFn = useServerFn(generateSceneKeyframe);
+  const voFn = useServerFn(generateSceneVoiceover);
+  const finalizeFn = useServerFn(finalizeCharacterShort);
+  const failFn = useServerFn(failCharacterShort);
+  const metaFn = useServerFn(generateMetadataForVideo);
 
   const { data: settings, isLoading } = useQuery({ queryKey: ["autopilot"], queryFn: () => getFn() });
   const { data: recent } = useQuery({ queryKey: ["autopilot-videos"], queryFn: () => listFn(), refetchInterval: 30000 });
+  const { data: latestTest, refetch: refetchLatest } = useQuery({
+    queryKey: ["autopilot-latest-test"],
+    queryFn: () => latestTestFn(),
+  });
 
   const [form, setForm] = useState({
     enabled: false,
@@ -68,25 +101,73 @@ function AutopilotPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const testMut = useMutation({
-    mutationFn: () => testFn({ data: { baseUrl: window.location.origin } }),
-    onSuccess: (res) => {
-      if (!res?.settingsFound) {
-        toast.error("No Autopilot settings found. Turn it on and click Apply first.");
-      } else {
-        toast.success("Setup looks good. Now run the GitHub workflow with force_test=true to create, render, and upload one test short.");
-        qc.invalidateQueries({ queryKey: ["autopilot-videos"] });
-      }
-    },
-    onError: (e: Error) => toast.error(`Test failed: ${e.message}`),
-  });
+  // Test flow (Step 1): generate video only, save to library, show preview
+  const [testStatus, setTestStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
+  const [testStage, setTestStage] = useState("");
+  const [testProgress, setTestProgress] = useState(0);
+  const [testScenes, setTestScenes] = useState<SceneStep[]>([]);
+  const [testPlan, setTestPlan] = useState<CharacterPlan | null>(null);
+  const [testVideo, setTestVideo] = useState<any | null>(latestTest ?? null);
+  const [testError, setTestError] = useState<string | null>(null);
 
+  useEffect(() => { if (latestTest && !testVideo) setTestVideo(latestTest); }, [latestTest]);
+
+  const runTestFlow = async () => {
+    setTestStatus("running");
+    setTestError(null);
+    setTestPlan(null);
+    setTestVideo(null);
+    setTestProgress(2);
+    setTestStage("Preparing autopilot topic…");
+    try {
+      const topicPick = await pickTopicFn();
+      const result = await runCharacterShortPipeline(
+        {
+          characterKey: topicPick.characterKey,
+          characterDescription: topicPick.characterDescription,
+          topic: topicPick.storyPrompt,
+          tone: topicPick.tone,
+          voice: (topicPick.voice as VoiceKey) ?? "alloy",
+        },
+        {
+          plan: planFn,
+          save: saveScriptFn,
+          keyframe: keyframeFn,
+          voiceover: voFn,
+          finalize: finalizeFn,
+          fail: failFn,
+          genMeta: metaFn,
+        },
+        {
+          onStage: setTestStage,
+          onProgress: setTestProgress,
+          onScenes: setTestScenes,
+          onPlan: setTestPlan,
+          onTtsWarning: (m) => toast.warning("Narration skipped", { description: m }),
+        },
+      );
+      setTestVideo(result.videoRow);
+      setTestStatus("done");
+      toast.success("Test video generated successfully! Ready for upload.");
+      qc.invalidateQueries({ queryKey: ["autopilot-latest-test"] });
+      qc.invalidateQueries({ queryKey: ["autopilot-videos"] });
+      refetchLatest();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Generation failed";
+      setTestError(msg);
+      setTestStatus("failed");
+      toast.error("Test flow failed", { description: msg });
+    }
+  };
 
   const setSlot = (idx: number, val: number) => {
     const arr = [...form.slot_hours];
     arr[idx] = Math.max(0, Math.min(23, val));
     setForm((f) => ({ ...f, slot_hours: arr }));
   };
+
+  const testRunning = testStatus === "running";
+  const hasReadyTest = !!(testVideo && testVideo.video_url && !testVideo.youtube_video_id);
 
   return (
     <div className="mx-auto grid max-w-6xl gap-6 p-6 md:p-10 lg:grid-cols-[440px_1fr]">
@@ -202,31 +283,114 @@ function AutopilotPage() {
       </Card>
 
       <div className="space-y-4">
+        {/* Two-step workflow */}
         <Card className="glass p-6">
-          <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary-glow" /><h2 className="font-display text-lg font-semibold">How to turn on hands-off uploads</h2></div>
-          <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
-            <li>1. Connect your GitHub repo to this project (Plus menu → GitHub).</li>
-            <li>2. In GitHub → Settings → Secrets → Actions, add <code className="rounded bg-muted px-1">AUTOPILOT_SECRET</code> (value below) and <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL).</li>
-            <li>3. Enable GitHub Actions on the repo. The <code className="rounded bg-muted px-1">.github/workflows/autopilot.yml</code> workflow runs every hour and renders + uploads any Shorts whose scheduled slot has just passed.</li>
-            <li>4. Turn on the Autopilot switch above and hit Apply.</li>
-          </ol>
-          <div className="mt-3 rounded-lg border border-border/60 bg-background/40 p-3 text-xs">
-            <div className="font-medium">AUTOPILOT_SECRET</div>
-            <div className="mt-1 text-muted-foreground">Stored in your Lovable Cloud secrets. Copy the same value into your GitHub secret — I can't display it here for safety, so open the Backend view → Secrets to copy it.</div>
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary-glow" />
+            <h2 className="font-display text-lg font-semibold">Two-step workflow</h2>
           </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Step 1 generates ONE test short (script + scenes + voiceover) into your library so you can preview it.
+            Step 2 uploads that same test short to YouTube — only when you say so.
+          </p>
 
-          <div className="mt-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="font-medium">Run a test now</div>
-                <p className="mt-1 text-xs text-muted-foreground">Checks your Autopilot setup without wasting generation credits. To create the real test video, run the GitHub workflow manually with <em>force_test=true</em>.</p>
-              </div>
-              <Button type="button" variant="secondary" onClick={() => testMut.mutate()} disabled={testMut.isPending}>
-                {testMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Check setup
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium"><PlayCircle className="h-4 w-4 text-primary-glow" /> Step 1 — Test Flow</div>
+              <p className="mt-1 text-xs text-muted-foreground">Generate video only. No upload.</p>
+              <Button className="mt-3 w-full" onClick={runTestFlow} disabled={testRunning}>
+                {testRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+                {testRunning ? "Generating…" : "Test Flow"}
               </Button>
+            </div>
+            <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium"><Youtube className="h-4 w-4 text-primary-glow" /> Step 2 — Run Workflow</div>
+              <p className="mt-1 text-xs text-muted-foreground">Upload the test short to YouTube.</p>
+              {hasReadyTest ? (
+                <UploadToYouTubeDialog
+                  video={testVideo}
+                  onUploaded={() => {
+                    qc.invalidateQueries({ queryKey: ["autopilot-latest-test"] });
+                    qc.invalidateQueries({ queryKey: ["autopilot-videos"] });
+                    refetchLatest();
+                  }}
+                >
+                  <Button className="mt-3 w-full" variant="secondary">
+                    <Youtube className="h-4 w-4" /> Run Workflow
+                  </Button>
+                </UploadToYouTubeDialog>
+              ) : (
+                <Button className="mt-3 w-full" variant="secondary" disabled>
+                  <Youtube className="h-4 w-4" /> Run Workflow
+                </Button>
+              )}
+              {!hasReadyTest && (
+                <p className="mt-2 text-xs text-muted-foreground">Generate a test video first.</p>
+              )}
             </div>
           </div>
 
+          {testStatus !== "idle" && (
+            <div className="mt-5 rounded-lg border border-border/60 bg-background/40 p-4">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">{testPlan?.title ?? "Generating test short…"}</p>
+                  <p className="text-xs text-muted-foreground">{testStage}</p>
+                </div>
+                <Badge variant={testStatus === "failed" ? "destructive" : testStatus === "done" ? "default" : "secondary"}>
+                  {testStatus === "done" ? "Test video generated successfully!" : testStatus}
+                </Badge>
+              </div>
+              {testRunning && <Progress value={testProgress} className="mb-3" />}
+              {testScenes.length > 0 && <SceneProgress scenes={testScenes} />}
+              {testError && (
+                <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
+                  <p className="font-medium">Something went wrong</p>
+                  <p className="mt-1 text-muted-foreground">{testError}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {testVideo?.video_url && (
+            <div className="mt-5 grid gap-4 rounded-lg border border-border/60 bg-background/40 p-4 md:grid-cols-[220px_1fr]">
+              <video src={testVideo.video_url} controls className="aspect-[9/16] w-full rounded-lg border border-border object-cover bg-black" />
+              <div className="space-y-2">
+                <p className="font-display text-base font-semibold">{testVideo.title}</p>
+                <p className="whitespace-pre-wrap text-xs text-muted-foreground">{testVideo.description}</p>
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <a href={testVideo.video_url} download className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs hover:bg-accent">
+                    <Download className="h-3.5 w-3.5" /> Download
+                  </a>
+                  {testVideo.youtube_video_id ? (
+                    <a href={`https://www.youtube.com/watch?v=${testVideo.youtube_video_id}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs text-primary-glow hover:bg-primary/20">
+                      <Youtube className="h-3.5 w-3.5" /> View on YouTube
+                    </a>
+                  ) : (
+                    <UploadToYouTubeDialog
+                      video={testVideo}
+                      onUploaded={() => {
+                        qc.invalidateQueries({ queryKey: ["autopilot-latest-test"] });
+                        refetchLatest();
+                      }}
+                    >
+                      <Button size="sm"><Youtube className="h-3.5 w-3.5" /> Upload to YouTube</Button>
+                    </UploadToYouTubeDialog>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card className="glass p-6">
+          <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary-glow" /><h2 className="font-display text-lg font-semibold">Hands-off daily uploads (GitHub worker)</h2></div>
+          <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
+            <li>1. Connect your GitHub repo to this project (Plus menu → GitHub).</li>
+            <li>2. In GitHub → Settings → Secrets → Actions, add <code className="rounded bg-muted px-1">AUTOPILOT_SECRET</code> and <code className="rounded bg-muted px-1">APP_BASE_URL</code> (your published URL).</li>
+            <li>3. Enable GitHub Actions. The <code className="rounded bg-muted px-1">.github/workflows/autopilot.yml</code> workflow runs hourly and renders + uploads any Shorts whose scheduled slot just passed.</li>
+            <li>4. Turn on the Autopilot switch above and hit Apply.</li>
+          </ol>
         </Card>
 
         <Card className="glass p-6">
