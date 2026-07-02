@@ -131,7 +131,7 @@ Return ONLY a JSON object matching:
       "action": string,            // ONE physical action the character does
       "cameraShot": "wide establishing" | "medium shot" | "close-up front" | "over-the-shoulder" | "low-angle hero",
       "mood": string,              // 1-3 word mood
-      "emotion": ${JSON.stringify(EMOTIONS)},   // pick ONE — drives face expression in the image
+      "emotion": "happy",           // pick ONE string from: ${emotionList}
       "voiceover": string          // 1-2 short spoken sentences, <= 22 words, told by a warm narrator ABOUT the character (third person). No stage directions, no quotes, no sound effects.
     },
     { "order": 2, ... },
