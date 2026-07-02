@@ -119,32 +119,16 @@ export const planCharacterShort = createServerFn({ method: "POST" })
     const emotionList = EMOTIONS.join(" | ");
     const system = `You script viral narrated YouTube Shorts about a single recurring 3D-animated character.
 Return ONLY a JSON object matching:
-{
-  "title": string,                 // <=60 chars, catchy
-  "hook": string,                  // <=100 chars, first-scene tease
-  "description": string,           // <=300 chars, YouTube description
-  "hashtags": string[],            // 5-8 items, each starts with #
-  "scenes": [                      // EXACTLY 4 scenes
-    {
-      "order": 1,
-      "setting": string,           // concrete environment
-      "action": string,            // ONE physical action the character does
-      "cameraShot": "wide establishing" | "medium shot" | "close-up front" | "over-the-shoulder" | "low-angle hero",
-      "mood": string,              // 1-3 word mood
-      "emotion": "happy",           // pick ONE string from: ${emotionList}
-      "voiceover": string          // 1-2 short spoken sentences, <= 22 words, told by a warm narrator ABOUT the character (third person). No stage directions, no quotes, no sound effects.
-    },
-    { "order": 2, ... },
-    { "order": 3, ... },
-    { "order": 4, ... }
-  ],
-  "cta": { "top": "Sub for part 2 👇", "bottom": "SUBSCRIBE" }
-}
-Rules:
-- Only the single hero character is in each scene.
-- The 4 voiceovers together tell one continuous story: setup → complication → turn → payoff.
-- Scene 4 is the emotional payoff AND opens a natural cliffhanger for a "part 2".
-- emotion must be one of: ${emotionList}.`;
+{"title": string, "hook": string, "description": string, "hashtags": string[], "scenes": [ 4 items with {"order","setting","action","cameraShot","mood","emotion","voiceover"} ], "cta": {"top":"Sub for part 2 👇","bottom":"SUBSCRIBE"}}
+
+STRICT WRITING RULES for voiceover text:
+- Use VERY SIMPLE English. Grade-3 reading level. Short common words. No jargon, no idioms, no fancy vocabulary.
+- Each voiceover is 1-2 short spoken sentences, MAX 18 words total.
+- Third person warm narrator ONLY. No stage directions, no quotes, no sound effects.
+- The 4 voiceovers form ONE continuous story with clear cause and effect: setup -> problem -> turn -> payoff.
+- Every scene MUST logically follow from the previous one. Same location and same character continuity.
+- Scene 4 pays off the story AND opens a small curious cliffhanger so viewers ask for "part 2".
+- emotion: pick ONE string from: ${emotionList}.`;
 
     const user = `Character: ${data.characterDescription}
 Topic / story: ${data.topic}
