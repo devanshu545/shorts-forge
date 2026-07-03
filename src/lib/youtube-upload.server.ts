@@ -112,10 +112,13 @@ function inspectMp4ForShorts(bytes: ArrayBuffer | Uint8Array, storedDurationSeco
     parseMp4Boxes(view, payloadStart, payloadEnd, (moovType, moovStart, moovEnd) => {
       if (moovType === "mvhd") durationSeconds = durationSeconds ?? parseMvhdDuration(view, moovStart, moovEnd);
       if (moovType !== "trak") return;
-      let trackSize: { width: number; height: number } | null = null;
+      const trackSizes: Array<{ width: number; height: number }> = [];
       let isVideoTrack = false;
       parseMp4Boxes(view, moovStart, moovEnd, (trakType, trakStart, trakEnd) => {
-        if (trakType === "tkhd") trackSize = parseTkhd(view, trakStart, trakEnd);
+        if (trakType === "tkhd") {
+          const parsed = parseTkhd(view, trakStart, trakEnd);
+          if (parsed) trackSizes.push(parsed);
+        }
         if (trakType === "mdia") {
           parseMp4Boxes(view, trakStart, trakEnd, (mdiaType, mdiaStart) => {
             if (mdiaType !== "hdlr" || mdiaStart + 12 > trakEnd) return;
@@ -129,6 +132,7 @@ function inspectMp4ForShorts(bytes: ArrayBuffer | Uint8Array, storedDurationSeco
           });
         }
       });
+      const trackSize = trackSizes[0];
       if (isVideoTrack && trackSize) {
         width = trackSize.width;
         height = trackSize.height;
