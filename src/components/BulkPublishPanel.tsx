@@ -102,7 +102,7 @@ export function BulkPublishPanel({
             // Keep existing edits, but sync published state from server truth.
             status: c.youtube_video_id ? "done" : existing.status,
             ytUrl: c.youtube_video_id
-              ? `https://www.youtube.com/watch?v=${c.youtube_video_id}`
+              ? `https://www.youtube.com/shorts/${c.youtube_video_id}`
               : existing.ytUrl,
           };
           continue;
@@ -116,7 +116,7 @@ export function BulkPublishPanel({
           tagsCsv: (c.tags || []).join(", "),
           privacy,
           status: c.youtube_video_id ? "done" : "idle",
-          ytUrl: c.youtube_video_id ? `https://www.youtube.com/watch?v=${c.youtube_video_id}` : undefined,
+          ytUrl: c.youtube_video_id ? `https://www.youtube.com/shorts/${c.youtube_video_id}` : undefined,
         };
       }
       return next;

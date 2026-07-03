@@ -212,5 +212,5 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     .eq("user_id", userId);
   if (updErr) throw new Error(updErr.message);
 
-  return { youtubeVideoId: youtubeId, url: `https://www.youtube.com/watch?v=${youtubeId}` };
+  return { youtubeVideoId: youtubeId, url: `https://www.youtube.com/shorts/${youtubeId}` };
 }
