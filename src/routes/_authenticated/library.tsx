@@ -13,9 +13,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
+import { Checkbox } from "@/components/ui/checkbox";
 import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
+import { BulkPublishPanel, type BulkClip } from "@/components/BulkPublishPanel";
 import { generateMetadataForVideo, startVideoGeneration } from "@/lib/media.functions";
-import { Play, Trash2, Download, Copy, Upload, Library as LibraryIcon, Loader2, Search, Youtube, RefreshCw } from "lucide-react";
+import { Play, Trash2, Download, Copy, Upload, Library as LibraryIcon, Loader2, Search, Youtube, RefreshCw, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/library")({ component: LibraryPage });
@@ -31,6 +33,8 @@ function LibraryPage() {
   const [sort, setSort] = useState("date" as "date" | "duration" | "title");
   const [selected, setSelected] = useState<Video | null>(null);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkPicked, setBulkPicked] = useState<Record<string, boolean>>({});
 
   const { data: videos, refetch, isLoading } = useQuery({
     queryKey: ["videos"],
@@ -132,19 +136,74 @@ function LibraryPage() {
     }
   };
 
+  const bulkClips: BulkClip[] = useMemo(
+    () => (filtered || [])
+      .filter((v) => bulkPicked[v.id] && (v.video_url || (v as any).video_storage_path))
+      .map((v) => ({
+        id: v.id,
+        title: v.title,
+        description: v.description,
+        tags: (v.tags as string[] | null) ?? null,
+        video_url: v.video_url,
+        thumbnail_url: v.thumbnail_url,
+        youtube_video_id: v.youtube_video_id,
+        clip_start_seconds: null,
+        clip_end_seconds: null,
+      })),
+    [filtered, bulkPicked],
+  );
+
+  const toggleBulkMode = () => {
+    setBulkMode((b) => {
+      if (b) setBulkPicked({});
+      return !b;
+    });
+  };
+
+  const selectAllBulk = () => {
+    const next: Record<string, boolean> = {};
+    for (const v of filtered) if (!v.youtube_video_id) next[v.id] = true;
+    setBulkPicked(next);
+  };
+
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 md:p-10">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div><h1 className="font-display text-3xl font-semibold">Library</h1><p className="text-sm text-muted-foreground">Every short you've forged.</p></div>
-        <div><input ref={inputRef} type="file" accept="video/mp4,video/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.currentTarget.value = ""; }} /><Button variant="outline" onClick={() => inputRef.current?.click()} disabled={uploading}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}Upload MP4</Button></div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant={bulkMode ? "default" : "outline"} onClick={toggleBulkMode}>
+            <ListChecks className="h-4 w-4" />{bulkMode ? `Bulk (${Object.values(bulkPicked).filter(Boolean).length})` : "Bulk upload"}
+          </Button>
+          {bulkMode && <Button size="sm" variant="ghost" onClick={selectAllBulk}>Select all ready</Button>}
+          <input ref={inputRef} type="file" accept="video/mp4,video/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.currentTarget.value = ""; }} />
+          <Button variant="outline" onClick={() => inputRef.current?.click()} disabled={uploading}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}Upload MP4</Button>
+        </div>
       </div>
       <Card className="glass p-4"><div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-9" placeholder="Search by title" value={query} onChange={(e) => setQuery(e.target.value)} /></div><Select value={sort} onValueChange={(v: "date" | "duration" | "title") => setSort(v)}><SelectTrigger className="sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="date">Sort by date</SelectItem><SelectItem value="duration">Sort by duration</SelectItem><SelectItem value="title">Sort by title</SelectItem></SelectContent></Select></div></Card>
+
+      {bulkMode && bulkClips.length > 0 && (
+        <BulkPublishPanel clips={bulkClips} onPublished={() => { refetch(); }} />
+      )}
 
       {isLoading ? <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">{Array.from({ length: 8 }).map((_, i) => <Card key={i} className="glass aspect-[9/16] animate-pulse" />)}</div> : !filtered.length ? (
         <Card className="glass grid place-items-center p-16 text-center"><LibraryIcon className="h-8 w-8 text-primary-glow" /><h3 className="mt-3 font-display text-lg font-semibold">No videos generated yet</h3><p className="mt-1 max-w-sm text-sm text-muted-foreground">Generate a video or upload an MP4 to build your library.</p></Card>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-          {filtered.map((v) => <VideoCard key={v.id} video={v} onOpen={() => setSelected(v)} onDelete={() => del(v.id)} onCopy={copy} onRegenerate={() => regenerate(v)} regenerating={regeneratingId === v.id} onUploaded={refetch} />)}
+          {filtered.map((v) => (
+            <VideoCard
+              key={v.id}
+              video={v}
+              onOpen={() => setSelected(v)}
+              onDelete={() => del(v.id)}
+              onCopy={copy}
+              onRegenerate={() => regenerate(v)}
+              regenerating={regeneratingId === v.id}
+              onUploaded={refetch}
+              bulkMode={bulkMode}
+              bulkChecked={!!bulkPicked[v.id]}
+              onBulkToggle={(checked) => setBulkPicked((p) => ({ ...p, [v.id]: checked }))}
+            />
+          ))}
         </div>
       )}
       <DetailDialog video={selected} onClose={() => setSelected(null)} onCopy={copy} onDelete={del} onRegenerate={regenerate} onRegenerateMetadata={regenerateMetadata} regeneratingId={regeneratingId} onUploaded={refetch} />
@@ -152,12 +211,17 @@ function LibraryPage() {
   );
 }
 
-function VideoCard({ video, onOpen, onDelete, onCopy, onRegenerate, regenerating, onUploaded }: { video: Video; onOpen: () => void; onDelete: () => void; onCopy: (l: string, t?: string | null) => void; onRegenerate: () => void; regenerating: boolean; onUploaded: () => void }) {
-  return <Card className="glass group overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:border-primary/40">
-    <button type="button" onClick={onOpen} className="relative block aspect-[9/16] w-full bg-surface-2 text-left">
+function VideoCard({ video, onOpen, onDelete, onCopy, onRegenerate, regenerating, onUploaded, bulkMode = false, bulkChecked = false, onBulkToggle }: { video: Video; onOpen: () => void; onDelete: () => void; onCopy: (l: string, t?: string | null) => void; onRegenerate: () => void; regenerating: boolean; onUploaded: () => void; bulkMode?: boolean; bulkChecked?: boolean; onBulkToggle?: (checked: boolean) => void }) {
+  return <Card className={`glass group overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:border-primary/40 ${bulkMode && bulkChecked ? "ring-2 ring-primary" : ""}`}>
+    <button type="button" onClick={() => bulkMode ? onBulkToggle?.(!bulkChecked) : onOpen()} className="relative block aspect-[9/16] w-full bg-surface-2 text-left">
       {video.thumbnail_url ? <img src={video.thumbnail_url} alt={video.title} className="h-full w-full object-cover" /> : video.video_url ? <video src={video.video_url} className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-muted-foreground"><Play className="h-8 w-8" /></div>}
       <span className="absolute left-2 top-2 rounded-full bg-background/70 px-2 py-0.5 text-[10px] uppercase tracking-wide backdrop-blur">{video.status}</span>
-      {video.youtube_video_id && <Badge className="absolute right-2 top-2">Uploaded</Badge>}
+      {bulkMode && (
+        <span className="absolute right-2 top-2 rounded-md bg-background/80 p-1 backdrop-blur">
+          <Checkbox checked={bulkChecked} onCheckedChange={(v) => onBulkToggle?.(!!v)} onClick={(e) => e.stopPropagation()} />
+        </span>
+      )}
+      {!bulkMode && video.youtube_video_id && <Badge className="absolute right-2 top-2">Uploaded</Badge>}
       {video.duration_seconds && <span className="absolute bottom-2 right-2 rounded bg-background/80 px-2 py-0.5 text-xs">{video.duration_seconds}s</span>}
       {video.generation_progress > 0 && video.status === "generating_video" && <Progress value={video.generation_progress} className="absolute bottom-0 left-0 right-0 h-1" />}
     </button>
