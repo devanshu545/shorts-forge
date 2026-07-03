@@ -208,3 +208,49 @@ export const refreshChannelStats = createServerFn({ method: "POST" })
 
     return { stats: metrics };
   });
+
+export const syncYouTubeUploadState = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { getFreshYouTubeAccessToken } = await import("@/lib/youtube-upload.server");
+    const { data: uploaded, error } = await context.supabase
+      .from("videos")
+      .select("id,youtube_video_id")
+      .eq("user_id", context.userId)
+      .not("youtube_video_id", "is", null)
+      .limit(200);
+    if (error) throw new Error(error.message);
+    const ids = (uploaded ?? [])
+      .map((row) => row.youtube_video_id)
+      .filter((id): id is string => Boolean(id));
+    if (!ids.length) return { checked: 0, missing: 0 };
+
+    const accessToken = await getFreshYouTubeAccessToken(supabaseAdmin, context.userId);
+    const existing = new Set<string>();
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=id&id=${chunk.map(encodeURIComponent).join(",")}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(`YouTube sync failed: ${body.error?.message || JSON.stringify(body.error || body)}`);
+      for (const item of body.items ?? []) if (item.id) existing.add(item.id);
+    }
+
+    const missing = ids.filter((id) => !existing.has(id));
+    if (missing.length) {
+      const { error: updErr } = await supabaseAdmin
+        .from("videos")
+        .update({
+          youtube_video_id: null,
+          status: "ready",
+          uploaded_at: null,
+          generation_stage: "YouTube Short removed — ready to re-upload",
+        } as never)
+        .eq("user_id", context.userId)
+        .in("youtube_video_id", missing);
+      if (updErr) throw new Error(updErr.message);
+    }
+    return { checked: ids.length, missing: missing.length };
+  });
