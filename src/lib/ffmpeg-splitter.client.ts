@@ -2,43 +2,7 @@
 // user's tab — no GitHub Actions, no server worker.
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
-
-export type SplitStage =
-  | "loading-ffmpeg"
-  | "reading-file"
-  | "probing"
-  | "encoding"
-  | "uploading"
-  | "done"
-  | "error";
-
-export type ClipProgress = {
-  index: number;
-  total: number;
-  stage: SplitStage;
-  percent: number; // 0..100 for the whole job
-  clipPercent: number; // 0..100 for the current clip
-  etaSeconds: number | null;
-  fps: number | null;
-  uploadMBps: number | null;
-  message: string;
-};
-
-export type SplitOptions = {
-  clipLength: number;
-  maxClips: number;
-  resolution: "1080p" | "4k";
-  onProgress: (p: ClipProgress) => void;
-};
-
-export type ClipResult = {
-  index: number;
-  startSeconds: number;
-  endSeconds: number;
-  mp4: Uint8Array;
-  thumbnailJpg: Uint8Array;
-  title: string;
-};
+import type { ClipProgress, ClipResult, SplitOptions } from "./ffmpeg-splitter.types";
 
 const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
 

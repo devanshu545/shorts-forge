@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
+import { createClientOnlyFn, useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "@/components/ui/card";
@@ -25,9 +25,15 @@ import {
 } from "@/lib/splitter.functions";
 import { OneClickPublishButton } from "@/components/OneClickPublishButton";
 import { ClipProgress } from "@/components/ClipProgress";
-import type { ClipProgress as ClipProgressData } from "@/lib/ffmpeg-splitter.client";
+import type { ClipProgress as ClipProgressData, SplitOptions } from "@/lib/ffmpeg-splitter.types";
 
 export const Route = createFileRoute("/_authenticated/split")({ component: SplitPage });
+
+const runBrowserSplitter = createClientOnlyFn((file: File, opts: SplitOptions) =>
+  import("@/lib/ffmpeg-splitter.client").then(({ splitVideoInBrowser }) =>
+    splitVideoInBrowser(file, opts),
+  ),
+);
 
 function SplitPage() {
   const qc = useQueryClient();
@@ -95,8 +101,7 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
 
       // 2. Split in browser via ffmpeg.wasm
-      const { splitVideoInBrowser } = await import("@/lib/ffmpeg-splitter.client");
-      const results = await splitVideoInBrowser(file, {
+      const results = await runBrowserSplitter(file, {
         clipLength,
         maxClips,
         resolution: is4k ? "4k" : "1080p",
