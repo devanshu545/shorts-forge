@@ -14,6 +14,8 @@
   "dependencies": {
     "@ai-sdk/gateway": "^4.0.4",
     "@ai-sdk/openai-compatible": "^3.0.2",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
     "@hookform/resolvers": "^5.2.2",
@@ -56,6 +58,7 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
+    "framer-motion": "^12.42.2",
     "input-otp": "^1.4.2",
     "jsonrepair": "^3.14.1",
     "lucide-react": "^0.575.0",
