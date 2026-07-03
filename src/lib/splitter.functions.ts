@@ -63,14 +63,17 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
     const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
     if (!dispatch.ok) {
+      // Keep the job queued instead of failing the user's upload. The scheduled
+      // native worker can still pick it up, and the UI should not lose the job
+      // because GitHub blocked an immediate dispatch request.
       await supabaseAdmin
         .from("long_videos")
-        .update({ status: "failed", error_message: dispatch.message } as never)
+        .update({ status: "queued", error_message: `Worker dispatch delayed: ${dispatch.message}` } as never)
         .eq("id", data.longVideoId)
         .eq("user_id", context.userId);
-      throw new Error(dispatch.message);
+      return { ok: true, latestRunUrl: null, dispatchMessage: dispatch.message };
     }
-    return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null };
+    return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null, dispatchMessage: null };
   });
 
 export const createClipUploadUrls = createServerFn({ method: "POST" })
