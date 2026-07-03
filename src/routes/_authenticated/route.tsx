@@ -2,9 +2,6 @@ import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
-import { useServerFn } from "@tanstack/react-start";
-import { useEffect } from "react";
-import { syncYouTubeUploadState } from "@/lib/youtube.functions";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
@@ -17,11 +14,6 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 function ProtectedLayout() {
-  const syncUploads = useServerFn(syncYouTubeUploadState);
-  useEffect(() => {
-    syncUploads().catch(() => {});
-  }, [syncUploads]);
-
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full">

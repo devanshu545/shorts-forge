@@ -32,7 +32,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [privacy, setPrivacy] = useState<"public" | "unlisted" | "private">("private");
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
-  const [url, setUrl] = useState<string | null>(video.youtube_video_id ? `https://www.youtube.com/shorts/${video.youtube_video_id}` : null);
+  const [url, setUrl] = useState<string | null>(video.youtube_video_id ? `https://www.youtube.com/watch?v=${video.youtube_video_id}` : null);
   const [uploading, setUploading] = useState(false);
 
   const run = async () => {

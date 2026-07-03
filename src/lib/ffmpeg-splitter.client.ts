@@ -39,7 +39,7 @@ async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   return ff;
 }
 
-function probeVideoMetadataFromFile(file: File): Promise<{ duration: number; width: number; height: number; isShortsVertical: boolean }> {
+function probeDurationFromFile(file: File): Promise<number> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const v = document.createElement("video");
@@ -48,192 +48,12 @@ function probeVideoMetadataFromFile(file: File): Promise<{ duration: number; wid
     v.src = url;
     const done = (d: number) => {
       URL.revokeObjectURL(url);
-      const duration = Number.isFinite(d) && d > 0 ? d : 0;
-      const width = v.videoWidth || 0;
-      const height = v.videoHeight || 0;
-      const aspect = width > 0 ? height / width : 0;
-      resolve({ duration, width, height, isShortsVertical: height > width && aspect >= 1.45 && aspect <= 2.25 });
+      resolve(Number.isFinite(d) && d > 0 ? d : 0);
     };
     v.onloadedmetadata = () => done(v.duration);
     v.onerror = () => done(0);
     setTimeout(() => done(v.duration || 0), 8000);
   });
-}
-
-function probeDurationFromFile(file: File): Promise<number> {
-  return probeVideoMetadataFromFile(file).then((m) => m.duration);
-}
-
-function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      cleanup();
-      resolve();
-    }, 4000);
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      video.onseeked = null;
-      video.onerror = null;
-    };
-    video.onseeked = () => {
-      cleanup();
-      resolve();
-    };
-    video.onerror = () => {
-      cleanup();
-      reject(new Error("Browser could not seek this video"));
-    };
-    video.currentTime = Math.max(0, time);
-  });
-}
-
-function drawShortFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, w: number, h: number, polish: boolean) {
-  ctx.save();
-  ctx.fillStyle = "#05050a";
-  ctx.fillRect(0, 0, w, h);
-
-  const vw = video.videoWidth || w;
-  const vh = video.videoHeight || h;
-  const cover = Math.max(w / vw, h / vh);
-  const coverW = vw * cover;
-  const coverH = vh * cover;
-  ctx.filter = "blur(18px) saturate(1.08) brightness(0.8)";
-  ctx.drawImage(video, (w - coverW) / 2, (h - coverH) / 2, coverW, coverH);
-
-  const contain = Math.min(w / vw, h / vh);
-  const fgW = vw * contain;
-  const fgH = vh * contain;
-  ctx.filter = polish ? "saturate(1.16) contrast(1.06) brightness(1.02)" : "none";
-  ctx.drawImage(video, (w - fgW) / 2, (h - fgH) / 2, fgW, fgH);
-  ctx.restore();
-}
-
-function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.86): Promise<Uint8Array> {
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (blob) => blob ? blob.arrayBuffer().then((b) => resolve(new Uint8Array(b))).catch(reject) : reject(new Error("JPEG export failed")),
-      "image/jpeg",
-      quality,
-    ),
-  );
-}
-
-async function recordShortWithBrowser(
-  file: File,
-  sourceMeta: { width: number; height: number },
-  startSec: number,
-  durSec: number,
-  polish: boolean,
-  onTick: (pct: number) => void,
-): Promise<{ bytes: Uint8Array; thumbnailJpg: Uint8Array; frames: string[]; mimeType: "video/webm" }> {
-  const supported = [
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ].find((type) => MediaRecorder.isTypeSupported(type));
-  if (!supported) throw new Error("This browser cannot record the AV1 fallback Short. Try Chrome/Edge or use a smaller H.264 MP4.");
-
-  const url = URL.createObjectURL(file);
-  const video = document.createElement("video");
-  video.src = url;
-  video.muted = true;
-  video.playsInline = true;
-  video.preload = "auto";
-  let audioContext: AudioContext | null = null;
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("Browser could not decode this source video"));
-      window.setTimeout(() => (video.videoWidth ? resolve() : reject(new Error("Timed out loading source video"))), 8000);
-    });
-    assertNotAborted();
-    await seekVideo(video, startSec);
-
-    const canvas = document.createElement("canvas");
-    const canFullHd = Math.max(sourceMeta.width, sourceMeta.height) >= 1280;
-    canvas.width = canFullHd ? 720 : 540;
-    canvas.height = canFullHd ? 1280 : 960;
-    const ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) throw new Error("Canvas renderer unavailable");
-
-    drawShortFrame(ctx, video, canvas.width, canvas.height, polish);
-    const frames: string[] = [];
-    const thumbCanvas = document.createElement("canvas");
-    thumbCanvas.width = 720;
-    thumbCanvas.height = 1280;
-    const tctx = thumbCanvas.getContext("2d", { alpha: false });
-    if (tctx) {
-      tctx.drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
-      frames.push(thumbCanvas.toDataURL("image/jpeg", 0.72));
-    }
-    const thumbnailJpg = tctx ? await canvasToJpeg(thumbCanvas, 0.88) : await canvasToJpeg(canvas, 0.88);
-
-    let stream = canvas.captureStream(30);
-    try {
-      audioContext = new AudioContext();
-      const source = audioContext.createMediaElementSource(video);
-      const destination = audioContext.createMediaStreamDestination();
-      const silentOutput = audioContext.createGain();
-      silentOutput.gain.value = 0;
-      source.connect(destination);
-      source.connect(silentOutput).connect(audioContext.destination);
-      stream = new MediaStream([
-        ...stream.getVideoTracks(),
-        ...destination.stream.getAudioTracks(),
-      ]);
-      await audioContext.resume().catch(() => {});
-    } catch (err) {
-      console.warn("[splitter] audio capture unavailable for browser fallback; continuing video-only", err);
-    }
-    const chunks: Blob[] = [];
-    const recorder = new MediaRecorder(stream, { mimeType: supported, videoBitsPerSecond: canFullHd ? 3_500_000 : 2_500_000 });
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    const done = new Promise<Blob>((resolve, reject) => {
-      recorder.onerror = () => reject(new Error("Browser recorder failed"));
-      recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
-    });
-
-    const startedAt = performance.now();
-    recorder.start(1000);
-    await video.play();
-    await new Promise<void>((resolve, reject) => {
-      const step = () => {
-        if (activeAbort) {
-          try { recorder.stop(); } catch { /* noop */ }
-          reject(new Error(abortReason || "Cancelled by user"));
-          return;
-        }
-        const elapsed = Math.max(0, (performance.now() - startedAt) / 1000);
-        drawShortFrame(ctx, video, canvas.width, canvas.height, polish);
-        onTick(Math.min(99, Math.round((elapsed / Math.max(durSec, 0.1)) * 100)));
-        if (elapsed >= durSec || video.ended) {
-          video.pause();
-          try { recorder.stop(); } catch { /* noop */ }
-          resolve();
-          return;
-        }
-        window.requestAnimationFrame(step);
-      };
-      window.requestAnimationFrame(step);
-    });
-    const blob = await done;
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    if (bytes.byteLength < 50_000) throw new Error("Browser fallback output was empty");
-    return { bytes, thumbnailJpg, frames, mimeType: "video/webm" };
-  } finally {
-    video.pause();
-    await audioContext?.close().catch(() => {});
-    URL.revokeObjectURL(url);
-  }
-}
-
-function shouldUseBrowserRecorderFirst(file: File, meta: { width: number; height: number }) {
-  const nameLooksUnsupported = /(?:av1|hevc|h\.?265|2160|4k|prores|10bit|hdr)/i.test(file.name);
-  const maxSide = Math.max(meta.width || 0, meta.height || 0);
-  return nameLooksUnsupported || maxSide >= 2160;
 }
 
 function pickWindows(duration: number, clipLen: number, maxClips: number) {
@@ -263,12 +83,12 @@ function pickWindows(duration: number, clipLen: number, maxClips: number) {
 // background and an original-aspect foreground centered on top. Prevents
 // horizontal cropping of the main subject when the source is landscape or
 // square, while still filling 9:16 for Shorts.
-function verticalCenterGraph(w: number, h: number, blur = 22, out = "vout"): string {
+function verticalCenterGraph(w: number, h: number, blur = 22): string {
   return [
     `split=2[bg][fg]`,
     `[bg]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${w}:${h},boxblur=${blur}:1[bg2]`,
     `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=fast_bilinear[fg2]`,
-    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto[${out}]`,
+    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto`,
   ].join(";");
 }
 
@@ -281,7 +101,7 @@ function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
     "fade=t=in:st=0:d=0.3",
     `fade=t=out:st=${fadeOutStart}:d=0.4`,
   ].join(",");
-  return `${verticalCenterGraph(w, h, 22, "centered")};[centered]${tail}[vout]`;
+  return `${verticalCenterGraph(w, h)},${tail}`;
 }
 
 function compactPolishFilter(): string {
@@ -441,9 +261,9 @@ async function encodeCompatibilityClip(
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
-    "-filter_complex", verticalCenterGraph(1080, 1920),
-    "-map", "[vout]",
+    "-map", "0:v:0",
     "-map", "0:a?",
+    "-vf", verticalCenterGraph(1080, 1920),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -453,7 +273,7 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
   ]);
@@ -478,13 +298,11 @@ async function encodeFastPolishedClipFromShort(
     "fade=t=in:st=0:d=0.18",
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
-  const vf = `${verticalCenterGraph(1080, 1920, 22, "centered")};[centered]${tail}[vout]`;
+  const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
   const code = await ff.exec([
     "-y",
     "-i", inputClipName,
-    "-filter_complex", vf,
-    "-map", "[vout]",
-    "-map", "0:a?",
+    "-vf", vf,
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -495,7 +313,7 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
   ]);
@@ -517,9 +335,7 @@ async function encodePolishedClip(
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
-    "-filter_complex", vf,
-    "-map", "[vout]",
-    "-map", "0:a?",
+    "-vf", vf,
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -530,7 +346,7 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
   ]);
@@ -547,69 +363,6 @@ async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Pr
   return mp4;
 }
 
-async function splitWithBrowserRecorderOnly(
-  file: File,
-  opts: SplitOptions,
-  sourceMeta: { duration: number; width: number; height: number },
-  windows: Array<{ start: number; end: number }>,
-  notify: (patch: Partial<ClipProgress> & Pick<ClipProgress, "stage" | "message">) => void,
-): Promise<ClipResult[]> {
-  const startedAt = Date.now();
-  const results: ClipResult[] = [];
-  const total = windows.length;
-  for (let i = 0; i < windows.length; i++) {
-    assertNotAborted();
-    const w = windows[i];
-    const dur = w.end - w.start;
-    notify({
-      index: i + 1,
-      total,
-      stage: "encoding",
-      percent: Math.round((results.length / Math.max(total, 1)) * 100),
-      clipPercent: 0,
-      etaSeconds: Math.ceil(dur),
-      elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-      fps: null,
-      uploadMBps: null,
-      message: "Using browser 4K/AV1 decoder for this source so it does not hit ffmpeg errors…",
-    });
-    const fallback = await recordShortWithBrowser(file, sourceMeta, w.start, dur, opts.polish, (pct) => {
-      notify({
-        index: i + 1,
-        total,
-        stage: "encoding",
-        percent: Math.round(((results.length + pct / 100) / Math.max(total, 1)) * 100),
-        clipPercent: pct,
-        etaSeconds: pct > 3 ? Math.round((dur / pct) * (100 - pct)) : Math.ceil(dur),
-        elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-        fps: null,
-        uploadMBps: null,
-        message: `Recording verified 9:16 Short with browser decoder (${pct}%)…`,
-      });
-    });
-    const clip: ClipResult = {
-      index: i + 1,
-      startSeconds: w.start,
-      endSeconds: w.end,
-      mp4: fallback.bytes,
-      mimeType: fallback.mimeType,
-      thumbnailJpg: fallback.thumbnailJpg,
-      frames: fallback.frames,
-      needsUpscale: opts.resolution === "4k-smart",
-      title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s`,
-    };
-    results.push(clip);
-    opts.onClip?.(clip);
-  }
-  notify({
-    stage: "done",
-    percent: 100,
-    clipPercent: 100,
-    message: `Generated ${results.length} browser-decoded 9:16 Short${results.length === 1 ? "" : "s"}.`,
-  });
-  return results;
-}
-
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
   activeAbort = false;
   abortReason = null;
@@ -624,15 +377,8 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   };
 
   notify({ stage: "probing", message: "Reading video metadata…" });
-  const sourceMeta = await probeVideoMetadataFromFile(file);
-  const probedDuration = sourceMeta.duration;
+  const probedDuration = await probeDurationFromFile(file);
   const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
-  const canStreamCopyShort = sourceMeta.isShortsVertical;
-  const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
-
-  if (shouldUseBrowserRecorderFirst(file, sourceMeta) && !canStreamCopyShort) {
-    return splitWithBrowserRecorderOnly(file, opts, sourceMeta, windows, notify);
-  }
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
   let ff = await getFFmpeg();
@@ -641,6 +387,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const inputName = "input.mp4";
   await ff.writeFile(inputName, await fetchFile(file));
 
+  const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
   const total = windows.length;
   const startedAt = Date.now();
   const results: ClipResult[] = [];
@@ -671,9 +418,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const instantName = `clip${i + 1}_instant.mp4`;
       const polishedName = `clip${i + 1}_polished.mp4`;
       let mp4: Uint8Array | null = null;
-      let mimeType: "video/mp4" | "video/webm" = "video/mp4";
-      let browserThumbnail: Uint8Array | null = null;
-      let browserFrames: string[] | null = null;
       const elapsed = (Date.now() - startedAt) / 1000;
       const remainingBudget = hardBudgetSec - elapsed;
       const perClipBudget = Math.max(8, Math.min(38, Math.floor((remainingBudget - 18) / Math.max(windows.length - i, 1))));
@@ -689,13 +433,9 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           message: `Instant-cutting clip ${i + 1} of ${total} first so a usable short is always ready…`,
         });
         try {
-          if (canStreamCopyShort) {
-            await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
-          } else {
-            throw new Error(`Source is ${sourceMeta.width || "?"}x${sourceMeta.height || "?"}; encoding 9:16 so YouTube accepts it as a Short`);
-          }
+          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
         } catch (copyErr) {
-          console.warn("[splitter] using vertical compatibility encode", copyErr);
+          console.warn("[splitter] stream-copy unavailable, using compatibility encode", copyErr);
           notify({
             index: i + 1, total,
             stage: "encoding",
@@ -703,7 +443,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             clipPercent: 0,
             etaSeconds: perClipBudget,
             elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-            message: `Creating verified 9:16 Short MP4 for clip ${i + 1}…`,
+            message: `Source codec needs conversion. Using ultrafast MP4 compatibility encode for clip ${i + 1}…`,
           });
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
           await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
@@ -768,47 +508,31 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         }
       } catch (err) {
         if (abortReason === "Cancelled by user") throw err;
-        console.warn("[splitter] ffmpeg path failed, switching to browser recorder fallback", err);
+        console.warn("[splitter] primary path failed, retrying with instant copy", err);
         try { await ff.deleteFile(instantName); } catch { /* noop */ }
         try { await ff.deleteFile(polishedName); } catch { /* noop */ }
-        notify({
-          index: i + 1, total,
-          stage: "encoding",
-          percent: Math.round((results.length / Math.max(total, 1)) * 100),
-          clipPercent: 0,
-          etaSeconds: Math.ceil(dur),
-          elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-          message: "Source codec is not supported by ffmpeg.wasm; using browser AV1 decoder fallback…",
-        });
-        const fallback = await recordShortWithBrowser(file, sourceMeta, w.start, dur, opts.polish, (pct) => {
-          notify({
-            index: i + 1, total,
-            stage: "encoding",
-            percent: Math.round(((results.length + pct / 100) / Math.max(total, 1)) * 100),
-            clipPercent: pct,
-            etaSeconds: pct > 3 ? Math.round((dur / pct) * (100 - pct)) : Math.ceil(dur),
-            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-            fps: null,
-            uploadMBps: null,
-            message: `Recording verified 9:16 Short with browser decoder (${pct}%)…`,
-          });
-        });
-        mp4 = fallback.bytes;
-        mimeType = fallback.mimeType;
-        browserThumbnail = fallback.thumbnailJpg;
-        browserFrames = fallback.frames;
+        if (!ffmpegInstance || activeAbort) {
+          activeAbort = false;
+          abortReason = null;
+          ff = await getFFmpeg();
+          await ff.writeFile(inputName, await fetchFile(file));
+        }
+        try {
+          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+        } catch {
+          try { await ff.deleteFile(instantName); } catch { /* noop */ }
+          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+        }
+        mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
 
-      const { jpg, frames } = browserThumbnail
-        ? { jpg: browserThumbnail, frames: browserFrames ?? [] }
-        : await makeThumbnailFromMp4(mp4);
+      const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
         index: i + 1,
         startSeconds: w.start,
         endSeconds: w.end,
         mp4,
-        mimeType,
         thumbnailJpg: jpg,
         frames,
         needsUpscale: opts.resolution === "4k-smart",
@@ -880,7 +604,7 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+      "-movflags", "+faststart",
       "-threads", "0",
       outName,
     ]);

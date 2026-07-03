@@ -30,7 +30,7 @@ export function OneClickPublishButton({ video, hint, frames, onUploaded, size = 
     video.youtube_video_id ? "done" : "idle",
   );
   const [url, setUrl] = useState<string | null>(
-    video.youtube_video_id ? `https://www.youtube.com/shorts/${video.youtube_video_id}` : null,
+    video.youtube_video_id ? `https://www.youtube.com/watch?v=${video.youtube_video_id}` : null,
   );
 
   const run = async () => {

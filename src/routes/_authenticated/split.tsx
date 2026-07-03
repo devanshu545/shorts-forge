@@ -17,6 +17,7 @@ import {
   createLongVideoUploadUrl,
   createClipUploadUrls,
   queueClip4KUpgrade,
+  markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
   deleteLongVideo,
@@ -51,6 +52,7 @@ function SplitPage() {
   const qc = useQueryClient();
   const createFn = useServerFn(createLongVideoUploadUrl);
   const clipUrlFn = useServerFn(createClipUploadUrls);
+  const queueFn = useServerFn(markLongVideoQueued);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
   const deleteFn = useServerFn(deleteLongVideo);
@@ -206,11 +208,13 @@ function SplitPage() {
           }).then(() => setUploadPct(100)).catch((err) => console.warn("[source-upload] failed", err))
         : Promise.resolve();
 
+      // Kick backend queue marker in parallel; don't wait.
+      queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
+
       const uploadTasks: Promise<{ ok: true } | { ok: false; error: Error }>[] = [];
 
       const uploadClip = async (clip: ClipResult) => {
-        const clipMimeType = clip.mimeType || "video/mp4";
-        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index, mimeType: clipMimeType } });
+        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index } });
         const clipBytes = clip.mp4.byteLength;
         const thumbBytes = clip.thumbnailJpg.byteLength;
         const totalBytes = clipBytes + thumbBytes;
@@ -231,7 +235,7 @@ function SplitPage() {
         };
 
         await Promise.all([
-          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, clipMimeType, (loaded, _total, mbps) => {
+          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, "video/mp4", (loaded, _total, mbps) => {
             videoLoaded = loaded;
             updateUploadProgress(`Uploading clip ${clip.index} video…`, mbps);
           }),
@@ -371,7 +375,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Color, sharpen &amp; audio polish with a time budget; if polish gets slow, instant HD stays ready.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Fast color/sharpen polish with a 5-minute safety budget. Falls back to instant HD if slow.</p>
               </div>
               <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
@@ -379,7 +383,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> Smart 4K</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Create fast HD Shorts first, then upgrade selected clips to 4K only when you click it.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Show per-clip 4K upgrade buttons after HD is ready. No automatic queue stalls.</p>
               </div>
               <Switch checked={smart4k} onCheckedChange={setSmart4k} />
             </div>

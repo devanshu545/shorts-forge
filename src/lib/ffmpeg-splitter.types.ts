@@ -45,7 +45,6 @@ export type ClipResult = {
   startSeconds: number;
   endSeconds: number;
   mp4: Uint8Array;
-  mimeType?: "video/mp4" | "video/webm";
   thumbnailJpg: Uint8Array;
   // 3 JPEG frames (data:image/jpeg;base64,...) sampled at 15%, 50%, 85%.
   // Fed to Gemini vision for accurate, content-aware AI titles.

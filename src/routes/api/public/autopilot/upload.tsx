@@ -89,10 +89,5 @@ async function handler(request: Request): Promise<Response> {
 }
 
 export const Route = createFileRoute("/api/public/autopilot/upload")({
-  server: {
-    handlers: {
-      GET: async () => Response.json({ ok: true, endpoint: "autopilot upload", methods: ["POST"] }),
-      POST: async ({ request }) => handler(request),
-    },
-  },
+  server: { handlers: { POST: async ({ request }) => handler(request) } },
 });

@@ -55,25 +55,11 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("long_videos")
-      .update({ status: "queued", error_message: null } as never)
+      .update({ status: "processing", error_message: null } as never)
       .eq("id", data.longVideoId)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
-
-    const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
-    const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
-    if (!dispatch.ok) {
-      // Keep the job queued instead of failing the user's upload. The scheduled
-      // native worker can still pick it up, and the UI should not lose the job
-      // because GitHub blocked an immediate dispatch request.
-      await supabaseAdmin
-        .from("long_videos")
-        .update({ status: "queued", error_message: `Worker dispatch delayed: ${dispatch.message}` } as never)
-        .eq("id", data.longVideoId)
-        .eq("user_id", context.userId);
-      return { ok: true, latestRunUrl: null, dispatchMessage: dispatch.message };
-    }
-    return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null, dispatchMessage: null };
+    return { ok: true };
   });
 
 export const createClipUploadUrls = createServerFn({ method: "POST" })
@@ -82,7 +68,6 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     z.object({
       longVideoId: z.string().uuid(),
       clipIndex: z.number().int().min(1).max(50),
-      mimeType: z.enum(["video/mp4", "video/webm"]).default("video/mp4"),
     }).parse(raw),
   )
   .handler(async ({ data, context }) => {
@@ -97,7 +82,7 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     if (!parent) throw new Error("Long video not found");
 
     const clipId = crypto.randomUUID();
-    const videoPath = `${context.userId}/${clipId}/clip.${data.mimeType === "video/webm" ? "webm" : "mp4"}`;
+    const videoPath = `${context.userId}/${clipId}/clip.mp4`;
     const thumbnailPath = `${context.userId}/${clipId}.jpg`;
     const [videoSigned, thumbSigned] = await Promise.all([
       supabaseAdmin.storage.from("videos").createSignedUploadUrl(videoPath, { upsert: true }),
