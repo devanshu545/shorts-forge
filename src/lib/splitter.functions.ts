@@ -82,6 +82,7 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     z.object({
       longVideoId: z.string().uuid(),
       clipIndex: z.number().int().min(1).max(50),
+      mimeType: z.enum(["video/mp4", "video/webm"]).default("video/mp4"),
     }).parse(raw),
   )
   .handler(async ({ data, context }) => {
@@ -96,7 +97,7 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     if (!parent) throw new Error("Long video not found");
 
     const clipId = crypto.randomUUID();
-    const videoPath = `${context.userId}/${clipId}/clip.mp4`;
+    const videoPath = `${context.userId}/${clipId}/clip.${data.mimeType === "video/webm" ? "webm" : "mp4"}`;
     const thumbnailPath = `${context.userId}/${clipId}.jpg`;
     const [videoSigned, thumbSigned] = await Promise.all([
       supabaseAdmin.storage.from("videos").createSignedUploadUrl(videoPath, { upsert: true }),

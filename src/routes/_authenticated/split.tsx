@@ -209,7 +209,8 @@ function SplitPage() {
       const uploadTasks: Promise<{ ok: true } | { ok: false; error: Error }>[] = [];
 
       const uploadClip = async (clip: ClipResult) => {
-        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index } });
+        const clipMimeType = clip.mimeType || "video/mp4";
+        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index, mimeType: clipMimeType } });
         const clipBytes = clip.mp4.byteLength;
         const thumbBytes = clip.thumbnailJpg.byteLength;
         const totalBytes = clipBytes + thumbBytes;
@@ -230,7 +231,7 @@ function SplitPage() {
         };
 
         await Promise.all([
-          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, "video/mp4", (loaded, _total, mbps) => {
+          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, clipMimeType, (loaded, _total, mbps) => {
             videoLoaded = loaded;
             updateUploadProgress(`Uploading clip ${clip.index} video…`, mbps);
           }),
