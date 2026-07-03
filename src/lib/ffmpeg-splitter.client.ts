@@ -210,7 +210,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       try { await ff.deleteFile(thumbName); } catch {}
     }
   } finally {
-    progressUnsub();
+    ff.off("progress", onProgress);
     try { await ff.deleteFile(inputName); } catch {}
   }
 
