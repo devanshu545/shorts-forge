@@ -17,7 +17,6 @@ import {
   createLongVideoUploadUrl,
   createClipUploadUrls,
   queueClip4KUpgrade,
-  markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
   deleteLongVideo,
@@ -52,7 +51,6 @@ function SplitPage() {
   const qc = useQueryClient();
   const createFn = useServerFn(createLongVideoUploadUrl);
   const clipUrlFn = useServerFn(createClipUploadUrls);
-  const queueFn = useServerFn(markLongVideoQueued);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
   const deleteFn = useServerFn(deleteLongVideo);
@@ -185,23 +183,6 @@ function SplitPage() {
       }
   };
 
-  const probeSourceMeta = (f: File): Promise<{ width: number; height: number; duration: number }> =>
-    new Promise((resolve) => {
-      const url = URL.createObjectURL(f);
-      const v = document.createElement("video");
-      v.preload = "metadata";
-      v.muted = true;
-      v.src = url;
-      const done = () => {
-        const out = { width: v.videoWidth || 0, height: v.videoHeight || 0, duration: Number.isFinite(v.duration) ? v.duration : 0 };
-        URL.revokeObjectURL(url);
-        resolve(out);
-      };
-      v.onloadedmetadata = done;
-      v.onerror = done;
-      setTimeout(done, 6000);
-    });
-
   const startUpload = async () => {
     if (!file) return;
     setBusy(true);
@@ -218,69 +199,12 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
-      // Probe up front so we NEVER stall a 4K/AV1/HEVC render inside ffmpeg.wasm.
-      // The native worker is dramatically faster for heavy sources and handles
-      // cinematic polish + smart 4K without browser memory limits.
-      setProgress({
-        index: 1, total: 1, stage: "probing", percent: 1, clipPercent: 1,
-        etaSeconds: null, elapsedSeconds: 0, fps: null, uploadMBps: null, updatedAt: Date.now(),
-        message: "Inspecting source resolution…",
-      });
-      const meta = await probeSourceMeta(file);
-      const maxSide = Math.max(meta.width, meta.height);
-      const heavyName = /(?:4k|2160|1440|av1|hevc|h\.?265|60fps|60p|prores)/i.test(file.name);
-      const heavySize = file.size > 80 * 1024 * 1024;
-      const heavyRes = maxSide >= 2200; // anything ≥ ~1440p goes native
-      const heavyPolish = polish && (maxSide >= 1900 || file.size > 60 * 1024 * 1024);
-      const useNativeWorker = smart4k || heavyName || heavySize || heavyRes || heavyPolish;
-
-      if (useNativeWorker) {
-        setProgress({
-          index: 1, total: 1, stage: "uploading",
-          percent: 1, clipPercent: 1, etaSeconds: null, fps: null, uploadMBps: null,
-          message: `Routing to native splitter (${meta.width || "?"}×${meta.height || "?"}, ${(file.size / 1024 / 1024).toFixed(0)}MB) — fast, stall-proof render…`,
-        });
-        await uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total, mbps) => {
-          const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
-          setUploadPct(pct);
-          setProgress({
-            index: 1, total: 1, stage: "uploading",
-            percent: pct, clipPercent: pct,
-            etaSeconds: mbps > 0 ? Math.round(((total - loaded) / 1024 / 1024) / mbps) : null,
-            fps: null, uploadMBps: mbps, uploadedBytes: loaded, totalBytes: total, updatedAt: Date.now(),
-            message: `Uploading source for native splitter… ${pct}%`,
-          });
-        });
-        setUploadPct(100);
-        const dispatch = await queueFn({ data: { longVideoId: info.longVideoId } });
-        setProgress({
-          index: 1, total: 1, stage: "encoding",
-          percent: 8, clipPercent: 8, etaSeconds: 240, fps: null, uploadMBps: null, updatedAt: Date.now(),
-          message: dispatch.dispatchMessage
-            ? "Native splitter queued. If instant start is delayed, the scheduled worker will pick it up automatically."
-            : "Native splitter running. Cinematic polish + 4K happen off-browser — clips will appear here automatically.",
-        });
-        if (dispatch.dispatchMessage) {
-          toast.info("Native splitter queued", { description: "Instant worker start was delayed, but the job was kept queued." });
-        } else {
-          toast.success("Native splitter started", {
-            description: "Heavy source detected — rendering off-browser for maximum speed.",
-          });
-        }
-        setFile(null);
-        qc.invalidateQueries({ queryKey: ["long-videos"] });
-        return;
-      }
-
       const uploadPromise = backupSource
         ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
             const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
             setUploadPct(pct);
           }).then(() => setUploadPct(100)).catch((err) => console.warn("[source-upload] failed", err))
         : Promise.resolve();
-
-      // Kick backend queue marker in parallel; don't wait.
-      queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
 
       const uploadTasks: Promise<{ ok: true } | { ok: false; error: Error }>[] = [];
 
@@ -446,7 +370,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Color, sharpen &amp; audio polish. Heavy sources auto-route to the native worker so 4K polish stays fast.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Color, sharpen &amp; audio polish with a time budget; if polish gets slow, instant HD stays ready.</p>
               </div>
               <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
@@ -454,7 +378,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> Smart 4K</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Show per-clip 4K upgrade buttons after HD is ready. No automatic queue stalls.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Create fast HD Shorts first, then upgrade selected clips to 4K only when you click it.</p>
               </div>
               <Switch checked={smart4k} onCheckedChange={setSmart4k} />
             </div>
