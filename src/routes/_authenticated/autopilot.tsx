@@ -575,8 +575,17 @@ function AutopilotPage() {
               </Button>
             </div>
             <div className="rounded-lg border border-border/60 bg-background/30 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium"><Youtube className="h-4 w-4 text-primary-glow" /> Step 2 — Run Workflow</div>
-              <p className="mt-1 text-xs text-muted-foreground">Upload the test short to YouTube.</p>
+              <div className="flex items-center gap-2 text-sm font-medium"><Youtube className="h-4 w-4 text-primary-glow" /> Step 2 — Run Workflow (GitHub)</div>
+              <p className="mt-1 text-xs text-muted-foreground">Triggers the GitHub Actions worker to upload the latest ready test short to YouTube — no manual GitHub click needed.</p>
+              <Button
+                className="mt-3 w-full"
+                variant="secondary"
+                onClick={() => dispatchWorkflow("test")}
+                disabled={dispatching !== null || !hasReadyTest}
+              >
+                {dispatching === "test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Youtube className="h-4 w-4" />}
+                {dispatching === "test" ? "Dispatching…" : "Run Workflow"}
+              </Button>
               {hasReadyTest ? (
                 <UploadToYouTubeDialog
                   video={testVideo}
@@ -586,20 +595,16 @@ function AutopilotPage() {
                     refetchLatest();
                   }}
                 >
-                  <Button className="mt-3 w-full" variant="secondary">
-                    <Youtube className="h-4 w-4" /> Run Workflow
+                  <Button className="mt-2 w-full" variant="ghost" size="sm">
+                    …or upload directly from the browser
                   </Button>
                 </UploadToYouTubeDialog>
               ) : (
-                <Button className="mt-3 w-full" variant="secondary" disabled>
-                  <Youtube className="h-4 w-4" /> Run Workflow
-                </Button>
-              )}
-              {!hasReadyTest && (
                 <p className="mt-2 text-xs text-muted-foreground">Generate a test video first.</p>
               )}
             </div>
           </div>
+
 
           {testStatus !== "idle" && (
             <div className="mt-5 rounded-lg border border-border/60 bg-background/40 p-4">
