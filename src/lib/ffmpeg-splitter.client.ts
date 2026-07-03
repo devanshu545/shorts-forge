@@ -295,7 +295,7 @@ async function cutClipFastCopyFromFile(ff: FFmpeg, inputName: string, clipName: 
     "-avoid_negative_ts", "make_zero",
     "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     clipName,
-  ]);
+  ], 25);
   if (code !== 0) throw new Error(`fast copy exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -306,6 +306,9 @@ async function encodeCompatibilityClip(
   clipName: string,
   startSec: number,
   durSec: number,
+  width = 720,
+  height = 1280,
+  blur = 18,
 ) {
   const code = await execWithBrowserBudget(ff, [
     "-y",
@@ -316,7 +319,7 @@ async function encodeCompatibilityClip(
     "-t", durSec.toFixed(2),
     "-map", "0:v:0",
     "-map", "0:a?",
-    "-vf", verticalCenterGraph(720, 1280, 18),
+    "-vf", verticalCenterGraph(width, height, blur),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -329,7 +332,7 @@ async function encodeCompatibilityClip(
     "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ], Math.min(90, Math.max(35, durSec * 1.8)), `Shorts compatibility encode for clip ${clipName}`);
+  ], Math.min(90, Math.max(35, durSec * (width >= 720 ? 1.8 : 1.15))), `Shorts compatibility encode for clip ${clipName}`);
   if (code !== 0) throw new Error(`compat encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
