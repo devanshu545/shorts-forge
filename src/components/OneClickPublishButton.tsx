@@ -16,9 +16,10 @@ type OneClickVideo = {
 
 // One-click SEO-optimized public upload to YouTube. Auto-generates title/desc/
 // tags from a hint and pushes visibility=public.
-export function OneClickPublishButton({ video, hint, onUploaded, size = "sm", label = "Publish" }: {
+export function OneClickPublishButton({ video, hint, frames, onUploaded, size = "sm", label = "Publish" }: {
   video: OneClickVideo;
   hint?: string;
+  frames?: string[];
   onUploaded?: (url: string) => void;
   size?: "sm" | "default";
   label?: string;
@@ -37,6 +38,7 @@ export function OneClickPublishButton({ video, hint, onUploaded, size = "sm", la
       setStage("seo");
       const meta = await seo({ data: {
         hint: hint || video.title || "Trending YouTube Short",
+        frames: frames && frames.length ? frames : undefined,
       } });
 
       setStage("uploading");

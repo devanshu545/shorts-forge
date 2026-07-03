@@ -15,7 +15,9 @@ const stageLabel: Record<ClipProgressData["stage"], string> = {
   "reading-file": "Reading file",
   probing: "Probing",
   encoding: "Encoding",
+  polishing: "Polishing",
   uploading: "Uploading",
+  upscaling: "Upscaling to 4K",
   done: "Done",
   error: "Error",
 };
