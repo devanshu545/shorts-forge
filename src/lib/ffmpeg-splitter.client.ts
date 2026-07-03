@@ -39,7 +39,7 @@ async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   return ff;
 }
 
-function probeDurationFromFile(file: File): Promise<number> {
+function probeVideoMetadataFromFile(file: File): Promise<{ duration: number; width: number; height: number; isShortsVertical: boolean }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const v = document.createElement("video");
@@ -48,12 +48,20 @@ function probeDurationFromFile(file: File): Promise<number> {
     v.src = url;
     const done = (d: number) => {
       URL.revokeObjectURL(url);
-      resolve(Number.isFinite(d) && d > 0 ? d : 0);
+      const duration = Number.isFinite(d) && d > 0 ? d : 0;
+      const width = v.videoWidth || 0;
+      const height = v.videoHeight || 0;
+      const aspect = width > 0 ? height / width : 0;
+      resolve({ duration, width, height, isShortsVertical: height > width && aspect >= 1.45 && aspect <= 2.25 });
     };
     v.onloadedmetadata = () => done(v.duration);
     v.onerror = () => done(0);
     setTimeout(() => done(v.duration || 0), 8000);
   });
+}
+
+function probeDurationFromFile(file: File): Promise<number> {
+  return probeVideoMetadataFromFile(file).then((m) => m.duration);
 }
 
 function pickWindows(duration: number, clipLen: number, maxClips: number) {
@@ -377,8 +385,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   };
 
   notify({ stage: "probing", message: "Reading video metadata…" });
-  const probedDuration = await probeDurationFromFile(file);
+  const sourceMeta = await probeVideoMetadataFromFile(file);
+  const probedDuration = sourceMeta.duration;
   const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
+  const canStreamCopyShort = sourceMeta.isShortsVertical;
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
   let ff = await getFFmpeg();
@@ -433,9 +443,13 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           message: `Instant-cutting clip ${i + 1} of ${total} first so a usable short is always ready…`,
         });
         try {
-          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+          if (canStreamCopyShort) {
+            await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+          } else {
+            throw new Error(`Source is ${sourceMeta.width || "?"}x${sourceMeta.height || "?"}; encoding 9:16 so YouTube accepts it as a Short`);
+          }
         } catch (copyErr) {
-          console.warn("[splitter] stream-copy unavailable, using compatibility encode", copyErr);
+          console.warn("[splitter] using vertical compatibility encode", copyErr);
           notify({
             index: i + 1, total,
             stage: "encoding",
@@ -443,7 +457,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             clipPercent: 0,
             etaSeconds: perClipBudget,
             elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-            message: `Source codec needs conversion. Using ultrafast MP4 compatibility encode for clip ${i + 1}…`,
+            message: `Creating verified 9:16 Short MP4 for clip ${i + 1}…`,
           });
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
           await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
@@ -518,7 +532,8 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           await ff.writeFile(inputName, await fetchFile(file));
         }
         try {
-          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+          if (canStreamCopyShort) await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+          else throw new Error("Source is not already vertical; using verified 9:16 encode fallback");
         } catch {
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
           await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
