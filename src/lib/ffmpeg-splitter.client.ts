@@ -32,12 +32,7 @@ async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   });
   const wasmAssetUrl = await getLocalWasmUrl();
   const coreJsUrl = new URL(CORE_JS_URL, window.location.origin).href;
-  await ff.load({
-    // Keep the JS loader in this app and the 31MB wasm as a Lovable big asset.
-    // This avoids random CDN/CORS failures like "failed to import ffmpeg-core.js".
-    coreURL: coreJsUrl,
-    wasmURL: wasmAssetUrl,
-  });
+  await ff.load({ coreURL: coreJsUrl, wasmURL: wasmAssetUrl });
   ffmpegInstance = ff;
   return ff;
 }
@@ -73,21 +68,30 @@ function pickWindows(duration: number, clipLen: number, maxClips: number) {
   return wins;
 }
 
-type EncodeTarget = { w: number; h: number; bitrate: string; preset: string; crf: string };
+// Cinematic polish filter chain: crisp lanczos scale, subtle sharpen, punchy
+// color, soft vignette and fade in/out. This is what stops shorts from
+// looking like raw cuts.
+function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
+  const fadeOutStart = Math.max(clipDurationSec - 0.5, 0.1).toFixed(2);
+  return [
+    `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos`,
+    `crop=${w}:${h}`,
+    "unsharp=5:5:0.7:5:5:0.0",
+    "eq=saturation=1.18:contrast=1.06:brightness=0.02",
+    "vignette=PI/6",
+    "fade=t=in:st=0:d=0.35",
+    `fade=t=out:st=${fadeOutStart}:d=0.5`,
+    "fps=30",
+  ].join(",");
+}
 
-const TARGETS: Record<"4k" | "1440p" | "1080p", EncodeTarget> = {
-  "4k":    { w: 2160, h: 3840, bitrate: "18M", preset: "ultrafast", crf: "22" },
-  "1440p": { w: 1440, h: 2560, bitrate: "14M", preset: "ultrafast", crf: "20" },
-  "1080p": { w: 1080, h: 1920, bitrate: "10M", preset: "veryfast", crf: "19" },
-};
-
-const FAST_COPY_TARGET = { w: 0, h: 0, bitrate: "copy", preset: "copy", crf: "copy" } satisfies EncodeTarget;
-
-async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
+async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<{ jpg: Uint8Array; frames: string[] }> {
   const buffer = new ArrayBuffer(mp4.byteLength);
   new Uint8Array(buffer).set(mp4);
   const blob = new Blob([buffer], { type: "video/mp4" });
   const url = URL.createObjectURL(blob);
+  const frames: string[] = [];
+
   const fallbackThumbnail = async () => {
     const canvas = document.createElement("canvas");
     canvas.width = 720;
@@ -104,8 +108,6 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
     ctx.font = "bold 64px Inter, Arial, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("SHORTS CLIP", canvas.width / 2, canvas.height / 2 - 20);
-    ctx.font = "34px Inter, Arial, sans-serif";
-    ctx.fillText("Ready to publish", canvas.width / 2, canvas.height / 2 + 42);
     const jpg = await new Promise<Blob>((resolve, reject) =>
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Fallback thumbnail export failed"))), "image/jpeg", 0.9),
     );
@@ -123,109 +125,102 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
       video.onerror = () => resolve(false);
       setTimeout(() => resolve(Boolean(video.videoWidth)), 5000);
     });
-    if (!loaded || !video.videoWidth) return await fallbackThumbnail();
-    const targetTime = Math.min(Math.max((video.duration || 1) * 0.25, 0.15), Math.max((video.duration || 1) - 0.1, 0.15));
-    await new Promise<void>((resolve) => {
-      video.onseeked = () => resolve();
-      video.currentTime = targetTime;
-      setTimeout(() => resolve(), 3000);
-    });
+    if (!loaded || !video.videoWidth) return { jpg: await fallbackThumbnail(), frames };
+
+    const dur = Math.max(video.duration || 1, 0.5);
     const canvas = document.createElement("canvas");
     canvas.width = 720;
     canvas.height = 1280;
     const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas thumbnail renderer unavailable");
-    ctx.fillStyle = "#05050a";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const scale = Math.max(canvas.width / (video.videoWidth || 1), canvas.height / (video.videoHeight || 1));
-    const w = (video.videoWidth || canvas.width) * scale;
-    const h = (video.videoHeight || canvas.height) * scale;
-    ctx.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
-    const jpg = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Thumbnail canvas export failed"))), "image/jpeg", 0.88),
-    );
-    return new Uint8Array(await jpg.arrayBuffer());
+    if (!ctx) return { jpg: await fallbackThumbnail(), frames };
+
+    // Sample 3 frames + 1 for thumbnail — feeds Gemini vision for real titles.
+    const frameTimes = [0.15, 0.5, 0.85].map((p) => Math.min(Math.max(p * dur, 0.1), dur - 0.05));
+    let thumbBlob: Blob | null = null;
+    for (let i = 0; i < frameTimes.length; i++) {
+      await new Promise<void>((resolve) => {
+        video.onseeked = () => resolve();
+        video.currentTime = frameTimes[i];
+        setTimeout(() => resolve(), 2500);
+      });
+      ctx.fillStyle = "#05050a";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const scale = Math.max(canvas.width / (video.videoWidth || 1), canvas.height / (video.videoHeight || 1));
+      const w = (video.videoWidth || canvas.width) * scale;
+      const h = (video.videoHeight || canvas.height) * scale;
+      ctx.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+      // Small JPEGs (~40-80KB) — cheap for Gemini vision.
+      const smallCanvas = document.createElement("canvas");
+      smallCanvas.width = 480;
+      smallCanvas.height = 854;
+      const sctx = smallCanvas.getContext("2d");
+      if (sctx) {
+        sctx.drawImage(canvas, 0, 0, smallCanvas.width, smallCanvas.height);
+        frames.push(smallCanvas.toDataURL("image/jpeg", 0.72));
+      }
+      if (i === 1) {
+        thumbBlob = await new Promise<Blob>((resolve, reject) =>
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("thumbnail export failed"))), "image/jpeg", 0.88),
+        );
+      }
+    }
+    const jpg = thumbBlob ? new Uint8Array(await thumbBlob.arrayBuffer()) : await fallbackThumbnail();
+    return { jpg, frames };
   } catch {
-    return await fallbackThumbnail();
+    return { jpg: await fallbackThumbnail(), frames };
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-async function encodeClip(
+// Instant stream-copy cut. Preserves source quality/resolution. ~1-2s per clip.
+async function cutClipInstant(ff: FFmpeg, inputName: string, clipName: string, startSec: number, durSec: number) {
+  const code = await ff.exec([
+    "-y",
+    "-ss", String(startSec),
+    "-i", inputName,
+    "-t", durSec.toFixed(2),
+    "-map", "0:v:0",
+    "-map", "0:a?",
+    "-c", "copy",
+    "-avoid_negative_ts", "make_zero",
+    "-movflags", "+faststart",
+    clipName,
+  ]);
+  if (code !== 0) throw new Error(`instant copy exit ${code}: ${ffmpegLogTail()}`);
+}
+
+// One-pass polish encode: cut + cinematic filter chain at 1080x1920.
+async function encodePolishedClip(
   ff: FFmpeg,
   inputName: string,
   clipName: string,
   startSec: number,
   durSec: number,
-  target: EncodeTarget,
-): Promise<void> {
-  if (target.bitrate === "copy") {
-    let code: number;
-    try {
-      code = await ff.exec([
-        "-y",
-        "-ss", String(startSec),
-        "-i", inputName,
-        "-t", durSec.toFixed(2),
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-c", "copy",
-        "-avoid_negative_ts", "make_zero",
-        "-movflags", "+faststart",
-        clipName,
-      ]);
-    } catch (err) {
-      throw new Error(`instant copy failed: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
-    }
-    if (code !== 0) throw new Error(`instant copy exit ${code}: ${ffmpegLogTail()}`);
-    return;
-  }
-
-  const vf = [
-    `scale=${target.w}:${target.h}:force_original_aspect_ratio=increase`,
-    `crop=${target.w}:${target.h}`,
-    "fps=30",
-  ].join(",");
-
-  let code: number;
-  try {
-    code = await ff.exec([
+) {
+  const vf = polishFilter(durSec, 1080, 1920);
+  const code = await ff.exec([
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
     "-vf", vf,
     "-c:v", "libx264",
-    "-preset", target.preset,
-    "-crf", target.crf,
-    "-b:v", target.bitrate,
-    "-maxrate", target.bitrate,
-    "-bufsize", target.bitrate,
+    "-preset", "ultrafast",
+    "-crf", "20",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
     "-b:a", "160k",
+    "-af", "afade=t=in:st=0:d=0.3,afade=t=out:st=" + Math.max(durSec - 0.5, 0.1).toFixed(2) + ":d=0.5",
     "-movflags", "+faststart",
     clipName,
-    ]);
-  } catch (err) {
-    throw new Error(`ffmpeg crashed @ ${target.w}x${target.h}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
-  }
-  if (code !== 0) {
-    throw new Error(`ffmpeg exit ${code} @ ${target.w}x${target.h}: ${ffmpegLogTail()}`);
-  }
+  ]);
+  if (code !== 0) throw new Error(`polish encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
 async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Promise<Uint8Array> {
-  let mp4Data: Awaited<ReturnType<FFmpeg["readFile"]>>;
-  try {
-    mp4Data = await ff.readFile(clipName);
-  } catch (err) {
-    throw new Error(`Generated MP4 could not be read for clip ${clipIndex}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
-  }
+  const mp4Data = await ff.readFile(clipName);
   const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
-  // Empty ffmpeg outputs can still be tiny MP4 containers (~260 bytes) with exit code 0.
-  // Treat those as failed so we retry from a safe start instead of showing a fake clip.
   if (mp4.byteLength < 50_000) {
     throw new Error(`Generated clip ${clipIndex} is empty (${mp4.byteLength} bytes). ${ffmpegLogTail()}`);
   }
@@ -233,26 +228,16 @@ async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Pr
 }
 
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
-  const preferred: EncodeTarget = opts.resolution === "4k" ? TARGETS["4k"] : FAST_COPY_TARGET;
-  const fallback: EncodeTarget = opts.resolution === "4k" ? TARGETS["1440p"] : TARGETS["1080p"];
-
   const notify = (patch: Partial<ClipProgress> & Pick<ClipProgress, "stage" | "message">) => {
     opts.onProgress({
-      index: 0,
-      total: 0,
-      percent: 0,
-      clipPercent: 0,
-      etaSeconds: null,
-      fps: null,
-      uploadMBps: null,
+      index: 0, total: 0, percent: 0, clipPercent: 0,
+      etaSeconds: null, fps: null, uploadMBps: null,
       ...patch,
     } as ClipProgress);
   };
 
   notify({ stage: "probing", message: "Reading video metadata…" });
   const probedDuration = await probeDurationFromFile(file);
-  // If browser metadata probing fails, never assume 60s: that caused invalid
-  // start times on short uploads and produced 261-byte empty MP4s.
   const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
@@ -267,22 +252,19 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const startedAt = Date.now();
   const results: ClipResult[] = [];
 
-  const onProgress = ({ progress }: { progress: number; time: number }) => {
+  const onProgress = ({ progress }: { progress: number }) => {
     const clipPct = Math.max(0, Math.min(100, Math.round(progress * 100)));
     const elapsedSec = (Date.now() - startedAt) / 1000;
     const overallDone = results.length + Math.max(0, Math.min(1, progress));
     const percent = Math.round((overallDone / Math.max(total, 1)) * 100);
     const eta = percent > 3 ? Math.round((elapsedSec / percent) * (100 - percent)) : null;
     notify({
-      index: results.length + 1,
-      total,
-      stage: "encoding",
-      percent,
-      clipPercent: clipPct,
-      etaSeconds: eta,
-      fps: null,
-      uploadMBps: null,
-      message: `Encoding clip ${results.length + 1} of ${total} (${clipPct}%)`,
+      index: results.length + 1, total,
+      stage: opts.polish ? "polishing" : "encoding",
+      percent, clipPercent: clipPct, etaSeconds: eta, fps: null, uploadMBps: null,
+      message: opts.polish
+        ? `Polishing clip ${results.length + 1} of ${total} (${clipPct}%) — cinematic pass`
+        : `Cutting clip ${results.length + 1} of ${total} (${clipPct}%)`,
     });
   };
   ff.on("progress", onProgress);
@@ -292,43 +274,93 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const w = windows[i];
       const dur = w.end - w.start;
       const clipName = `clip${i + 1}.mp4`;
-
-      let usedTarget = preferred;
       let mp4: Uint8Array | null = null;
+
       try {
-        await encodeClip(ff, inputName, clipName, w.start, dur, preferred);
+        if (opts.polish) {
+          await encodePolishedClip(ff, inputName, clipName, w.start, dur);
+        } else {
+          await cutClipInstant(ff, inputName, clipName, w.start, dur);
+        }
         mp4 = await readValidMp4(ff, clipName, i + 1);
       } catch (err) {
-        console.warn("[splitter] preferred target failed, retrying at fallback", err);
-        notify({
-          index: i + 1, total, stage: "encoding", percent: Math.round((i / total) * 100),
-          clipPercent: 0, etaSeconds: null, fps: null, uploadMBps: null,
-          message: `${preferred.bitrate === "copy" ? "Instant cut" : `${preferred.w}p`} failed for clip ${i + 1}, retrying at ${fallback.w}×${fallback.h}…`,
-        });
-        usedTarget = fallback;
-        try { await ff.deleteFile(clipName); } catch {}
-        await encodeClip(ff, inputName, clipName, w.start, dur, fallback);
+        console.warn("[splitter] primary path failed, retrying with instant copy", err);
+        try { await ff.deleteFile(clipName); } catch { /* noop */ }
+        await cutClipInstant(ff, inputName, clipName, w.start, dur);
         mp4 = await readValidMp4(ff, clipName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
-      const thumb = await makeThumbnailFromMp4(mp4);
 
+      const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
         index: i + 1,
         startSeconds: w.start,
         endSeconds: w.end,
         mp4,
-        thumbnailJpg: thumb,
-          title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s · ${usedTarget.bitrate === "copy" ? "Instant" : `${usedTarget.h}p`}`,
+        thumbnailJpg: jpg,
+        frames,
+        needsUpscale: opts.resolution === "4k-smart",
+        title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s`,
       });
 
-      try { await ff.deleteFile(clipName); } catch {}
+      try { await ff.deleteFile(clipName); } catch { /* noop */ }
     }
   } finally {
     ff.off("progress", onProgress);
-    try { await ff.deleteFile(inputName); } catch {}
+    try { await ff.deleteFile(inputName); } catch { /* noop */ }
   }
 
-  notify({ stage: "done", percent: 100, clipPercent: 100, message: `Generated ${results.length} clip${results.length === 1 ? "" : "s"}.` });
+  notify({
+    stage: "done", percent: 100, clipPercent: 100,
+    message: `Generated ${results.length} polished clip${results.length === 1 ? "" : "s"}.`,
+  });
   return results;
+}
+
+// Smart-4K background upscale: takes an existing 1080p MP4 and re-encodes to
+// 2160x3840 with lanczos + sharpen. Called AFTER instant HD clips are already
+// live in the library, so the user is never blocked on 4K encode time.
+export async function upscaleClipTo4K(
+  mp4: Uint8Array,
+  onProgress?: (pct: number) => void,
+): Promise<Uint8Array> {
+  const ff = await getFFmpeg();
+  const inName = `up_in_${Date.now()}.mp4`;
+  const outName = `up_out_${Date.now()}.mp4`;
+  await ff.writeFile(inName, mp4);
+
+  const handler = ({ progress }: { progress: number }) => {
+    onProgress?.(Math.max(0, Math.min(100, Math.round(progress * 100))));
+  };
+  ff.on("progress", handler);
+  try {
+    const vf = [
+      "scale=2160:3840:flags=lanczos:force_original_aspect_ratio=increase",
+      "crop=2160:3840",
+      "unsharp=5:5:0.8:5:5:0.0",
+    ].join(",");
+    const code = await ff.exec([
+      "-y",
+      "-i", inName,
+      "-vf", vf,
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "24",
+      "-maxrate", "16M",
+      "-bufsize", "24M",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "copy",
+      "-movflags", "+faststart",
+      outName,
+    ]);
+    if (code !== 0) throw new Error(`4K upscale exit ${code}: ${ffmpegLogTail()}`);
+    const out = await ff.readFile(outName);
+    const bytes = out instanceof Uint8Array ? out : new TextEncoder().encode(String(out));
+    if (bytes.byteLength < 100_000) throw new Error("4K output too small — treating as failure");
+    return bytes;
+  } finally {
+    ff.off("progress", handler);
+    try { await ff.deleteFile(inName); } catch { /* noop */ }
+    try { await ff.deleteFile(outName); } catch { /* noop */ }
+  }
 }
