@@ -81,6 +81,8 @@ const TARGETS: Record<"4k" | "1440p" | "1080p", EncodeTarget> = {
   "1080p": { w: 1080, h: 1920, bitrate: "10M", preset: "veryfast", crf: "19" },
 };
 
+const FAST_COPY_TARGET = { w: 0, h: 0, bitrate: "copy", preset: "copy", crf: "copy" } satisfies EncodeTarget;
+
 async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
   const buffer = new ArrayBuffer(mp4.byteLength);
   new Uint8Array(buffer).set(mp4);
@@ -158,6 +160,28 @@ async function encodeClip(
   durSec: number,
   target: EncodeTarget,
 ): Promise<void> {
+  if (target.bitrate === "copy") {
+    let code: number;
+    try {
+      code = await ff.exec([
+        "-y",
+        "-ss", String(startSec),
+        "-i", inputName,
+        "-t", durSec.toFixed(2),
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+        "-movflags", "+faststart",
+        clipName,
+      ]);
+    } catch (err) {
+      throw new Error(`instant copy failed: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
+    }
+    if (code !== 0) throw new Error(`instant copy exit ${code}: ${ffmpegLogTail()}`);
+    return;
+  }
+
   const vf = [
     `scale=${target.w}:${target.h}:force_original_aspect_ratio=increase`,
     `crop=${target.w}:${target.h}`,
@@ -209,7 +233,7 @@ async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Pr
 }
 
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
-  const preferred: EncodeTarget = opts.resolution === "4k" ? TARGETS["4k"] : TARGETS["1080p"];
+  const preferred: EncodeTarget = opts.resolution === "4k" ? TARGETS["4k"] : FAST_COPY_TARGET;
   const fallback: EncodeTarget = opts.resolution === "4k" ? TARGETS["1440p"] : TARGETS["1080p"];
 
   const notify = (patch: Partial<ClipProgress> & Pick<ClipProgress, "stage" | "message">) => {
@@ -279,7 +303,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         notify({
           index: i + 1, total, stage: "encoding", percent: Math.round((i / total) * 100),
           clipPercent: 0, etaSeconds: null, fps: null, uploadMBps: null,
-          message: `${preferred.w}p failed for clip ${i + 1}, retrying at ${fallback.w}×${fallback.h}…`,
+          message: `${preferred.bitrate === "copy" ? "Instant cut" : `${preferred.w}p`} failed for clip ${i + 1}, retrying at ${fallback.w}×${fallback.h}…`,
         });
         usedTarget = fallback;
         try { await ff.deleteFile(clipName); } catch {}
@@ -295,7 +319,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         endSeconds: w.end,
         mp4,
         thumbnailJpg: thumb,
-        title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s · ${usedTarget.h}p`,
+          title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s · ${usedTarget.bitrate === "copy" ? "Instant" : `${usedTarget.h}p`}`,
       });
 
       try { await ff.deleteFile(clipName); } catch {}

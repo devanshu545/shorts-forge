@@ -196,7 +196,7 @@ function SplitPage() {
             </Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Upload any MP4. We split it into vertical Shorts <b>right in your browser</b> — no GitHub, no wait.
+            Upload any MP4. Instant mode cuts Shorts in minutes without slow re-rendering.
           </p>
 
           <div className="mt-6 space-y-5">
@@ -239,8 +239,8 @@ function SplitPage() {
 
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
-                <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> True 4K (2160×3840)</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Much slower + big files. Shorts shows 1080p anyway.</p>
+                <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> True 4K render</Label>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Slow export. Keep off for instant Shorts under 5 minutes.</p>
               </div>
               <Switch checked={is4k} onCheckedChange={setIs4k} />
             </div>
@@ -258,7 +258,7 @@ function SplitPage() {
 
             <Button onClick={startUpload} disabled={!file || busy} className="w-full">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}
-              {busy ? "Working…" : "Split in browser"}
+              {busy ? "Working…" : is4k ? "Render 4K Shorts" : "Create Instant Shorts"}
             </Button>
           </div>
         </Card>
