@@ -17,7 +17,6 @@ import {
   createLongVideoUploadUrl,
   createClipUploadUrls,
   queueClip4KUpgrade,
-  markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
   deleteLongVideo,
@@ -52,7 +51,6 @@ function SplitPage() {
   const qc = useQueryClient();
   const createFn = useServerFn(createLongVideoUploadUrl);
   const clipUrlFn = useServerFn(createClipUploadUrls);
-  const queueFn = useServerFn(markLongVideoQueued);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
   const deleteFn = useServerFn(deleteLongVideo);
