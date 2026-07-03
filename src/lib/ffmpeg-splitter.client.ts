@@ -85,17 +85,42 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
   new Uint8Array(buffer).set(mp4);
   const blob = new Blob([buffer], { type: "video/mp4" });
   const url = URL.createObjectURL(blob);
+  const fallbackThumbnail = async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 720;
+    canvas.height = 1280;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas thumbnail renderer unavailable");
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, "#05050a");
+    gradient.addColorStop(0.45, "#7c3aed");
+    gradient.addColorStop(1, "#06b6d4");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.font = "bold 64px Inter, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("SHORTS CLIP", canvas.width / 2, canvas.height / 2 - 20);
+    ctx.font = "34px Inter, Arial, sans-serif";
+    ctx.fillText("Ready to publish", canvas.width / 2, canvas.height / 2 + 42);
+    const jpg = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Fallback thumbnail export failed"))), "image/jpeg", 0.9),
+    );
+    return new Uint8Array(await jpg.arrayBuffer());
+  };
+
   try {
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
     video.preload = "metadata";
     video.src = url;
-    await new Promise<void>((resolve, reject) => {
+    const loaded = await new Promise<boolean>((resolve) => {
       video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("Could not load generated clip for thumbnail"));
-      setTimeout(() => resolve(), 5000);
+      video.onerror = () => resolve(false);
+      setTimeout(() => resolve(Boolean(video.videoWidth)), 5000);
     });
+    if (!loaded || !video.videoWidth) return await fallbackThumbnail();
     const targetTime = Math.min(Math.max((video.duration || 1) * 0.25, 0.15), Math.max((video.duration || 1) - 0.1, 0.15));
     await new Promise<void>((resolve) => {
       video.onseeked = () => resolve();
@@ -117,6 +142,8 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Thumbnail canvas export failed"))), "image/jpeg", 0.88),
     );
     return new Uint8Array(await jpg.arrayBuffer());
+  } catch {
+    return await fallbackThumbnail();
   } finally {
     URL.revokeObjectURL(url);
   }
