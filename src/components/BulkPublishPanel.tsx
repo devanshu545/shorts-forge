@@ -15,7 +15,7 @@ import {
   Rocket, Wand2, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle,
   Youtube, Sparkles, ListChecks, Copy,
 } from "lucide-react";
-import { uploadVideoToYouTube } from "@/lib/media.functions";
+import { commitShortsSafeVideo, createShortsSafeVideoUploadUrl, uploadVideoToYouTube } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
 
 export type BulkClip = {
@@ -71,6 +71,8 @@ export function BulkPublishPanel({
   onPublished?: () => void;
 }) {
   const upload = useServerFn(uploadVideoToYouTube);
+  const createSafeUpload = useServerFn(createShortsSafeVideoUploadUrl);
+  const commitSafeUpload = useServerFn(commitShortsSafeVideo);
   const seo = useServerFn(generateShortSEO);
 
   // Master template inputs — applied to all selected clips on demand.
@@ -219,6 +221,19 @@ export function BulkPublishPanel({
         if (!row) continue;
         patchRow(id, { status: "uploading", error: undefined });
         try {
+          const safeInfo = await createSafeUpload({ data: { videoId: id } });
+          const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await import("@/lib/shorts-safe.client");
+          const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
+          const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
+          if (safe.changed) {
+            await uploadSignedMp4(safeInfo.uploadSignedUrl, safe.bytes);
+            await commitSafeUpload({ data: {
+              videoId: id,
+              videoStoragePath: safeInfo.videoStoragePath,
+              fileSizeBytes: safe.bytes.byteLength,
+              durationSeconds: safe.durationSeconds,
+            } });
+          }
           const tags = row.tagsCsv
             .split(",")
             .map((t) => t.trim())
