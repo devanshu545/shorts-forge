@@ -22,6 +22,9 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedChannelRouteImport } from './routes/_authenticated/channel'
 import { Route as AuthenticatedAutopilotRouteImport } from './routes/_authenticated/autopilot'
 import { Route as ApiPublicYoutubeCallbackRouteImport } from './routes/api/public/youtube/callback'
+import { Route as ApiPublicSplitterUpscaleTickRouteImport } from './routes/api/public/splitter/upscale-tick'
+import { Route as ApiPublicSplitterUpscaleProgressRouteImport } from './routes/api/public/splitter/upscale-progress'
+import { Route as ApiPublicSplitterUpscaleCompleteRouteImport } from './routes/api/public/splitter/upscale-complete'
 import { Route as ApiPublicSplitterTickRouteImport } from './routes/api/public/splitter/tick'
 import { Route as ApiPublicSplitterFinishRouteImport } from './routes/api/public/splitter/finish'
 import { Route as ApiPublicSplitterCompleteRouteImport } from './routes/api/public/splitter/complete'
@@ -96,6 +99,24 @@ const ApiPublicYoutubeCallbackRoute =
     path: '/api/public/youtube/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicSplitterUpscaleTickRoute =
+  ApiPublicSplitterUpscaleTickRouteImport.update({
+    id: '/api/public/splitter/upscale-tick',
+    path: '/api/public/splitter/upscale-tick',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicSplitterUpscaleProgressRoute =
+  ApiPublicSplitterUpscaleProgressRouteImport.update({
+    id: '/api/public/splitter/upscale-progress',
+    path: '/api/public/splitter/upscale-progress',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicSplitterUpscaleCompleteRoute =
+  ApiPublicSplitterUpscaleCompleteRouteImport.update({
+    id: '/api/public/splitter/upscale-complete',
+    path: '/api/public/splitter/upscale-complete',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicSplitterTickRoute = ApiPublicSplitterTickRouteImport.update({
   id: '/api/public/splitter/tick',
   path: '/api/public/splitter/tick',
@@ -162,6 +183,9 @@ export interface FileRoutesByFullPath {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
+  '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
+  '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
+  '/api/public/splitter/upscale-tick': typeof ApiPublicSplitterUpscaleTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
@@ -184,6 +208,9 @@ export interface FileRoutesByTo {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
+  '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
+  '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
+  '/api/public/splitter/upscale-tick': typeof ApiPublicSplitterUpscaleTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRoutesById {
@@ -208,6 +235,9 @@ export interface FileRoutesById {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
+  '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
+  '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
+  '/api/public/splitter/upscale-tick': typeof ApiPublicSplitterUpscaleTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRouteTypes {
@@ -232,6 +262,9 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/tick'
+    | '/api/public/splitter/upscale-complete'
+    | '/api/public/splitter/upscale-progress'
+    | '/api/public/splitter/upscale-tick'
     | '/api/public/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -254,6 +287,9 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/tick'
+    | '/api/public/splitter/upscale-complete'
+    | '/api/public/splitter/upscale-progress'
+    | '/api/public/splitter/upscale-tick'
     | '/api/public/youtube/callback'
   id:
     | '__root__'
@@ -277,6 +313,9 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/tick'
+    | '/api/public/splitter/upscale-complete'
+    | '/api/public/splitter/upscale-progress'
+    | '/api/public/splitter/upscale-tick'
     | '/api/public/youtube/callback'
   fileRoutesById: FileRoutesById
 }
@@ -293,6 +332,9 @@ export interface RootRouteChildren {
   ApiPublicSplitterCompleteRoute: typeof ApiPublicSplitterCompleteRoute
   ApiPublicSplitterFinishRoute: typeof ApiPublicSplitterFinishRoute
   ApiPublicSplitterTickRoute: typeof ApiPublicSplitterTickRoute
+  ApiPublicSplitterUpscaleCompleteRoute: typeof ApiPublicSplitterUpscaleCompleteRoute
+  ApiPublicSplitterUpscaleProgressRoute: typeof ApiPublicSplitterUpscaleProgressRoute
+  ApiPublicSplitterUpscaleTickRoute: typeof ApiPublicSplitterUpscaleTickRoute
   ApiPublicYoutubeCallbackRoute: typeof ApiPublicYoutubeCallbackRoute
 }
 
@@ -387,6 +429,27 @@ declare module '@tanstack/react-router' {
       path: '/api/public/youtube/callback'
       fullPath: '/api/public/youtube/callback'
       preLoaderRoute: typeof ApiPublicYoutubeCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/splitter/upscale-tick': {
+      id: '/api/public/splitter/upscale-tick'
+      path: '/api/public/splitter/upscale-tick'
+      fullPath: '/api/public/splitter/upscale-tick'
+      preLoaderRoute: typeof ApiPublicSplitterUpscaleTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/splitter/upscale-progress': {
+      id: '/api/public/splitter/upscale-progress'
+      path: '/api/public/splitter/upscale-progress'
+      fullPath: '/api/public/splitter/upscale-progress'
+      preLoaderRoute: typeof ApiPublicSplitterUpscaleProgressRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/splitter/upscale-complete': {
+      id: '/api/public/splitter/upscale-complete'
+      path: '/api/public/splitter/upscale-complete'
+      fullPath: '/api/public/splitter/upscale-complete'
+      preLoaderRoute: typeof ApiPublicSplitterUpscaleCompleteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/splitter/tick': {
@@ -486,18 +549,11 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicSplitterCompleteRoute: ApiPublicSplitterCompleteRoute,
   ApiPublicSplitterFinishRoute: ApiPublicSplitterFinishRoute,
   ApiPublicSplitterTickRoute: ApiPublicSplitterTickRoute,
+  ApiPublicSplitterUpscaleCompleteRoute: ApiPublicSplitterUpscaleCompleteRoute,
+  ApiPublicSplitterUpscaleProgressRoute: ApiPublicSplitterUpscaleProgressRoute,
+  ApiPublicSplitterUpscaleTickRoute: ApiPublicSplitterUpscaleTickRoute,
   ApiPublicYoutubeCallbackRoute: ApiPublicYoutubeCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

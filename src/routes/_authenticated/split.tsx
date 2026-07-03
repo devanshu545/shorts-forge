@@ -13,10 +13,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
 import { Scissors, UploadCloud, Loader2, Trash2, RefreshCw, Sparkles, Zap, Wand2, CheckCircle2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import {
   createLongVideoUploadUrl,
   createClipUploadUrls,
+  queueClip4KUpgrade,
   markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
@@ -36,10 +36,6 @@ const runBrowserSplitter = createClientOnlyFn((file: File, opts: SplitOptions) =
   ),
 );
 
-const runUpscale = createClientOnlyFn((mp4: Uint8Array, onProg: (pct: number) => void) =>
-  import("@/lib/ffmpeg-splitter.client").then(({ upscaleClipTo4K }) => upscaleClipTo4K(mp4, onProg, 290)),
-);
-
 const cancelBrowserSplitter = createClientOnlyFn(() =>
   import("@/lib/ffmpeg-splitter.client").then(({ cancelSplitVideoInBrowser }) => cancelSplitVideoInBrowser()),
 );
@@ -47,9 +43,7 @@ const cancelBrowserSplitter = createClientOnlyFn(() =>
 type ClipMeta = {
   clipId: string;
   frames: string[];
-  storagePath: string;
-  mp4: Uint8Array;
-  upscale: { state: "idle" | "running" | "done" | "failed"; pct: number; error?: string };
+  upscale: { state: "idle" | "queued" | "running" | "done" | "failed"; pct: number; error?: string };
 };
 
 function SplitPage() {
@@ -62,6 +56,7 @@ function SplitPage() {
   const deleteFn = useServerFn(deleteLongVideo);
   const registerFn = useServerFn(registerSplitClip);
   const finishFn = useServerFn(finishSplitJob);
+  const queue4kFn = useServerFn(queueClip4KUpgrade);
 
   const [file, setFile] = useState<File | null>(null);
   const [clipLength, setClipLength] = useState(55);
@@ -144,41 +139,31 @@ function SplitPage() {
     }
   };
 
-  const runSingle4KUpgrade = async (clipId: string, storagePath: string, mp4: Uint8Array) => {
+  const runSingle4KUpgrade = async (clipId: string) => {
       const startedAt = Date.now();
       setClipMeta((m) => ({
         ...m,
-        [clipId]: { ...m[clipId], upscale: { state: "running", pct: 0 } },
+        [clipId]: { ...m[clipId], upscale: { state: "queued", pct: 5 } },
       }));
       try {
-        const upscaled = await runUpscale(mp4, (pct) => {
-          const elapsed = Math.round((Date.now() - startedAt) / 1000);
-          const eta = pct > 3 ? Math.round((elapsed / pct) * (100 - pct)) : null;
-          setProgress({
-            index: 1, total: 1, stage: "upscaling",
-            percent: pct, clipPercent: pct, etaSeconds: eta, elapsedSeconds: elapsed,
-            fps: null, uploadMBps: null, updatedAt: Date.now(),
-            message: `Upgrading selected clip to 4K… ${pct}%`,
-          });
-          setClipMeta((m) => ({
-            ...m,
-            [clipId]: { ...m[clipId], upscale: { state: "running", pct } },
-          }));
+        setProgress({
+          index: 1, total: 1, stage: "upscaling",
+          percent: 5, clipPercent: 5, etaSeconds: 240, elapsedSeconds: 0,
+          fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: "Queued native 4K worker. HD clip stays ready while 4K renders.",
         });
-        const up = await supabase.storage
-          .from("videos")
-          .upload(storagePath, upscaled, { contentType: "video/mp4", upsert: true });
-        if (up.error) throw new Error(up.error.message);
+        await queue4kFn({ data: { clipId } });
         setClipMeta((m) => ({
           ...m,
-          [clipId]: { ...m[clipId], upscale: { state: "done", pct: 100 } },
+          [clipId]: { ...m[clipId], upscale: { state: "running", pct: 15 } },
         }));
         setProgress({
-          index: 1, total: 1, stage: "done", percent: 100, clipPercent: 100,
-          etaSeconds: 0, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+          index: 1, total: 1, stage: "upscaling", percent: 15, clipPercent: 15,
+          etaSeconds: 240, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
           fps: null, uploadMBps: null, updatedAt: Date.now(),
-          message: "4K upgrade ready.",
+          message: "Native 4K worker started. This page will refresh the clip status automatically.",
         });
+        toast.success("4K upgrade queued on the native worker");
         qc.invalidateQueries({ queryKey: ["long-clips", selectedId] });
       } catch (err) {
         console.warn("[upscale] failed", err);
@@ -193,7 +178,7 @@ function SplitPage() {
           index: 1, total: 1, stage: "error", percent: 0, clipPercent: 0,
           etaSeconds: null, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
           fps: null, uploadMBps: null, updatedAt: Date.now(),
-          message: err instanceof Error ? err.message : "4K upgrade failed; HD clip is still ready.",
+          message: err instanceof Error ? err.message : "4K queue failed; HD clip is still ready.",
         });
       }
   };
@@ -278,8 +263,6 @@ function SplitPage() {
           [uploadInfo.clipId]: {
             clipId: uploadInfo.clipId,
             frames: clip.frames,
-            storagePath: uploadInfo.videoPath,
-            mp4: clip.mp4,
             upscale: { state: smart4k ? "idle" : "done", pct: smart4k ? 0 : 100 },
           },
         }));
@@ -518,9 +501,17 @@ function SplitPage() {
                       youtube_video_id: string | null;
                       clip_start_seconds: number | null;
                       clip_end_seconds: number | null;
+                      generation_stage: string | null;
+                      generation_progress: number | null;
                     }) => {
                       const meta = clipMeta[c.id];
-                      const upscaleState = meta?.upscale;
+                      const dbStage = c.generation_stage || "";
+                      const dbProgress = c.generation_progress ?? 0;
+                      const isNative4k = dbStage.toLowerCase().includes("4k");
+                      const db4kFailed = dbStage.toLowerCase().includes("4k failed");
+                      const upscaleState = meta?.upscale || (isNative4k
+                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : "running" as const, pct: dbProgress }
+                        : undefined);
                       return (
                         <motion.div
                           key={c.id}
@@ -538,7 +529,7 @@ function SplitPage() {
                               <div className="truncate text-sm font-medium">{c.title}</div>
                               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                 <span>{Math.round(c.clip_start_seconds ?? 0)}s → {Math.round(c.clip_end_seconds ?? 0)}s</span>
-                                {upscaleState?.state === "running" && (
+                                {(upscaleState?.state === "queued" || upscaleState?.state === "running") && (
                                   <Badge variant="secondary" className="gap-1 text-[10px]">
                                     <Loader2 className="h-3 w-3 animate-spin" /> 4K {upscaleState.pct}%
                                   </Badge>
@@ -554,8 +545,8 @@ function SplitPage() {
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              {smart4k && meta && upscaleState?.state === "idle" && (
-                                <Button size="sm" variant="outline" onClick={() => runSingle4KUpgrade(meta.clipId, meta.storagePath, meta.mp4)}>
+                              {smart4k && (!upscaleState || upscaleState.state === "idle" || upscaleState.state === "failed") && (
+                                <Button size="sm" variant="outline" onClick={() => runSingle4KUpgrade(meta?.clipId || c.id)}>
                                   Upgrade 4K
                                 </Button>
                               )}

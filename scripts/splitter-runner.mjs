@@ -11,6 +11,7 @@ const DEFAULT_BASE = "https://devanshuautomation.lovable.app";
 const BASE = (process.env.APP_BASE_URL || DEFAULT_BASE).replace(/\/+$/, "");
 const SECRET = process.env.AUTOPILOT_SECRET;
 const EXPLICIT_ID = process.env.LONG_VIDEO_ID || "";
+const UPSCALE_CLIP_ID = process.env.CLIP_ID || "";
 
 async function getOidc() {
   const u = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
@@ -97,6 +98,83 @@ async function fetchJob() {
   return json.job;
 }
 
+async function fetchUpscaleJob() {
+  const res = await fetch(`${BASE}/api/public/splitter/upscale-tick?clipId=${UPSCALE_CLIP_ID}`, {
+    method: "POST",
+    headers: await headers({ "Content-Type": "application/json" }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`upscale tick failed HTTP ${res.status}: ${text.slice(0, 500)}`);
+  const json = JSON.parse(text);
+  return json.job;
+}
+
+async function uploadSigned(uploadUrl, filePath, contentType) {
+  const bytes = readFileSync(filePath);
+  const payload = new FormData();
+  payload.append("cacheControl", "3600");
+  payload.append("", new Blob([bytes], { type: contentType }));
+  const res = await fetch(uploadUrl, { method: "PUT", body: payload, headers: { "x-upsert": "true" } });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`signed upload failed HTTP ${res.status}: ${text.slice(0, 500)}`);
+  return bytes.length;
+}
+
+async function reportUpscaleProgress(clipId, progress, stage) {
+  await fetch(`${BASE}/api/public/splitter/upscale-progress`, {
+    method: "POST",
+    headers: await headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ clipId, progress, stage }),
+  }).catch(() => {});
+}
+
+async function processUpscaleJob(job) {
+  const workDir = join(tmpdir(), `upscale-${job.clipId}`);
+  rmSync(workDir, { recursive: true, force: true });
+  mkdirSync(workDir, { recursive: true });
+
+  const src = join(workDir, "clip-source.mp4");
+  const out = join(workDir, "clip-4k.mp4");
+  console.log(`Downloading HD clip (${job.sourceUrl.slice(0, 90)}…)`);
+  const dl = await fetch(job.sourceUrl);
+  if (!dl.ok) throw new Error(`Clip download failed HTTP ${dl.status}`);
+  writeFileSync(src, Buffer.from(await dl.arrayBuffer()));
+  await reportUpscaleProgress(job.clipId, 30, "Native 4K source downloaded");
+
+  const dur = probeDuration(src);
+  if (dur <= 0) throw new Error("Could not probe clip duration");
+  console.log(`Native 4K upscale: ${dur.toFixed(1)}s clip`);
+  await reportUpscaleProgress(job.clipId, 42, "Native 4K render started");
+
+  const vf = [
+    "scale=2160:3840:force_original_aspect_ratio=increase:flags=lanczos",
+    "crop=2160:3840",
+    "eq=saturation=1.08:contrast=1.035:brightness=0.005",
+    "unsharp=5:5:0.85:5:5:0.0",
+  ].join(",");
+  run("ffmpeg", [
+    "-y", "-i", src,
+    "-vf", vf,
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+    "-maxrate", "32M", "-bufsize", "48M",
+    "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+    "-af", "acompressor=threshold=-18dB:ratio=2.1:attack=12:release=120,alimiter=limit=0.96",
+    "-movflags", "+faststart", out,
+  ]);
+  await reportUpscaleProgress(job.clipId, 82, "Native 4K render finished; uploading");
+
+  const size = await uploadSigned(job.uploadSignedUrl, out, "video/mp4");
+  await reportUpscaleProgress(job.clipId, 94, "Native 4K upload finished; finalizing");
+  const res = await fetch(`${BASE}/api/public/splitter/upscale-complete`, {
+    method: "POST",
+    headers: await headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ clipId: job.clipId, fileSizeBytes: size, durationSeconds: dur }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`upscale complete HTTP ${res.status}: ${text.slice(0, 500)}`);
+  rmSync(workDir, { recursive: true, force: true });
+}
+
 async function processJob(job) {
   const workDir = join(tmpdir(), `split-${job.longVideoId}`);
   rmSync(workDir, { recursive: true, force: true });
@@ -170,6 +248,25 @@ async function processJob(job) {
 
 async function main() {
   console.log(`Splitter runner starting @ ${BASE}`);
+  if (UPSCALE_CLIP_ID) {
+    const job = await fetchUpscaleJob();
+    if (!job) { console.log("No clip to upscale. Done."); return; }
+    try {
+      await processUpscaleJob(job);
+      console.log("✅ 4K upgrade done.");
+    } catch (err) {
+      console.error("FATAL:", err);
+      try {
+        await fetch(`${BASE}/api/public/splitter/upscale-complete`, {
+          method: "POST",
+          headers: await headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ clipId: UPSCALE_CLIP_ID, errorMessage: String(err instanceof Error ? err.message : err).slice(0, 1000) }),
+        });
+      } catch {}
+      process.exit(1);
+    }
+    return;
+  }
   const job = await fetchJob();
   if (!job) { console.log("No queued long videos. Done."); return; }
   console.log(`Job: ${job.longVideoId} (user ${job.userId.slice(0, 8)})`);

@@ -7,6 +7,11 @@ on:
         required: false
         default: ""
         type: string
+      clip_id:
+        description: "Existing clip ID to upgrade to native 4K"
+        required: false
+        default: ""
+        type: string
   schedule:
     - cron: "*/10 * * * *"
 
@@ -30,4 +35,5 @@ jobs:
           AUTOPILOT_SECRET: ${{ secrets.AUTOPILOT_SECRET }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           LONG_VIDEO_ID: ${{ inputs.long_video_id }}
+          CLIP_ID: ${{ inputs.clip_id }}
         run: node scripts/splitter-runner.mjs

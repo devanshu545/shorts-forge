@@ -232,7 +232,7 @@ async function cutClipFastCopyFromFile(ff: FFmpeg, inputName: string, clipName: 
   if (code !== 0) throw new Error(`fast copy exit ${code}: ${ffmpegLogTail()}`);
 }
 
-async function encodeFastPolishedClip(
+async function encodeCompatibilityClip(
   ff: FFmpeg,
   inputName: string,
   clipName: string,
@@ -244,14 +244,59 @@ async function encodeFastPolishedClip(
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
-    "-vf", compactPolishFilter(),
+    "-map", "0:v:0",
+    "-map", "0:a?",
+    "-vf", "scale=1080:1920:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=1080:1920",
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
-    "-x264-params", "keyint=90:min-keyint=45:scenecut=0:rc-lookahead=0:ref=1",
-    "-crf", "20",
+    "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
+    "-crf", "22",
     "-pix_fmt", "yuv420p",
-    "-c:a", "copy",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-ac", "2",
+    "-movflags", "+faststart",
+    "-threads", "0",
+    clipName,
+  ]);
+  if (code !== 0) throw new Error(`compat encode exit ${code}: ${ffmpegLogTail()}`);
+}
+
+// Fast enhancement pass. The important speed trick is that this runs from an
+// already-cut short clip, not the full source file. Re-encoding a 30-60s local
+// short is dramatically faster and gives us a safe fallback: the instant clip
+// already exists if this pass hits the budget.
+async function encodeFastPolishedClipFromShort(
+  ff: FFmpeg,
+  inputClipName: string,
+  clipName: string,
+  durSec: number,
+) {
+  const fadeOut = Math.max(durSec - 0.45, 0.1).toFixed(2);
+  const vf = [
+    "scale=1080:1920:force_original_aspect_ratio=increase:flags=fast_bilinear",
+    "crop=1080:1920",
+    "eq=saturation=1.2:contrast=1.07:brightness=0.015",
+    "unsharp=3:3:0.7:3:3:0.0",
+    "vignette=PI/7:eval=init",
+    "fade=t=in:st=0:d=0.18",
+    `fade=t=out:st=${fadeOut}:d=0.35`,
+  ].join(",");
+  const code = await ff.exec([
+    "-y",
+    "-i", inputClipName,
+    "-vf", vf,
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
+    "-crf", "21",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-ac", "2",
+    "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
     "-movflags", "+faststart",
     "-threads", "0",
     clipName,
@@ -330,6 +375,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const total = windows.length;
   const startedAt = Date.now();
   const results: ClipResult[] = [];
+  let skipFurtherPolish = false;
 
   const onProgress = ({ progress }: { progress: number }) => {
     const clipPct = Math.max(0, Math.min(100, Math.round(progress * 100)));
@@ -353,41 +399,115 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       assertNotAborted();
       const w = windows[i];
       const dur = w.end - w.start;
-      const clipName = `clip${i + 1}.mp4`;
+      const instantName = `clip${i + 1}_instant.mp4`;
+      const polishedName = `clip${i + 1}_polished.mp4`;
       let mp4: Uint8Array | null = null;
       const elapsed = (Date.now() - startedAt) / 1000;
       const remainingBudget = hardBudgetSec - elapsed;
-      const perClipBudget = Math.max(12, Math.min(55, Math.floor((remainingBudget - 20) / Math.max(windows.length - i, 1))));
+      const perClipBudget = Math.max(8, Math.min(38, Math.floor((remainingBudget - 18) / Math.max(windows.length - i, 1))));
 
       try {
-        if (opts.polish && remainingBudget > 30 && perClipBudget > 12) {
-          let timeoutId = 0;
-          await Promise.race([
-            encodeFastPolishedClip(ff, inputName, clipName, w.start, dur),
-            new Promise<never>((_, reject) => {
-              const timeoutMs = perClipBudget * 1000;
-              timeoutId = window.setTimeout(() => {
-                terminateActive("Fast polish exceeded its per-clip budget; using instant HD fallback");
-                reject(new Error(abortReason || "Fast polish switched to instant fallback"));
-              }, timeoutMs);
-            }),
-          ]).finally(() => window.clearTimeout(timeoutId));
-        } else {
-          await cutClipFastCopyFromFile(ff, inputName, clipName, w.start, dur);
+        notify({
+          index: i + 1, total,
+          stage: "encoding",
+          percent: Math.round((results.length / Math.max(total, 1)) * 100),
+          clipPercent: 0,
+          etaSeconds: null,
+          elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+          message: `Instant-cutting clip ${i + 1} of ${total} first so a usable short is always ready…`,
+        });
+        try {
+          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+        } catch (copyErr) {
+          console.warn("[splitter] stream-copy unavailable, using compatibility encode", copyErr);
+          notify({
+            index: i + 1, total,
+            stage: "encoding",
+            percent: Math.round((results.length / Math.max(total, 1)) * 100),
+            clipPercent: 0,
+            etaSeconds: perClipBudget,
+            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+            message: `Source codec needs conversion. Using ultrafast MP4 compatibility encode for clip ${i + 1}…`,
+          });
+          try { await ff.deleteFile(instantName); } catch { /* noop */ }
+          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
         }
-        mp4 = await readValidMp4(ff, clipName, i + 1);
+        mp4 = await readValidMp4(ff, instantName, i + 1);
+
+        if (opts.polish && !skipFurtherPolish && remainingBudget > 18 && perClipBudget > 8) {
+          let timeoutId = 0;
+          try {
+            notify({
+              index: i + 1, total,
+              stage: "polishing",
+              percent: Math.round((results.length / Math.max(total, 1)) * 100),
+              clipPercent: 0,
+              etaSeconds: perClipBudget,
+              elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+              message: `Speed-polishing clip ${i + 1} of ${total} from the short file (${perClipBudget}s cap)…`,
+            });
+            await Promise.race([
+              encodeFastPolishedClipFromShort(ff, instantName, polishedName, dur),
+              new Promise<never>((_, reject) => {
+                const timeoutMs = perClipBudget * 1000;
+                timeoutId = window.setTimeout(() => {
+                  terminateActive("Speed polish exceeded its safe budget; keeping instant HD and skipping more polish this run");
+                  reject(new Error(abortReason || "Speed polish switched to instant fallback"));
+                }, timeoutMs);
+              }),
+            ]).finally(() => window.clearTimeout(timeoutId));
+            mp4 = await readValidMp4(ff, polishedName, i + 1);
+          } catch (err) {
+            if (abortReason === "Cancelled by user") throw err;
+            console.warn("[splitter] polish skipped; instant HD kept", err);
+            skipFurtherPolish = true;
+            notify({
+              index: i + 1, total,
+              stage: "encoding",
+              percent: Math.round(((results.length + 1) / Math.max(total, 1)) * 100),
+              clipPercent: 100,
+              etaSeconds: null,
+              elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+              message: "Polish was slower than the budget, so instant HD was kept to finish on time.",
+            });
+            if (!ffmpegInstance || activeAbort) {
+              activeAbort = false;
+              abortReason = null;
+              ff = await getFFmpeg();
+              await ff.writeFile(inputName, await fetchFile(file));
+            }
+          }
+        } else {
+          notify({
+            index: i + 1, total,
+            stage: "encoding",
+            percent: Math.round(((results.length + 1) / Math.max(total, 1)) * 100),
+            clipPercent: 100,
+            etaSeconds: null,
+            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+            message: skipFurtherPolish
+              ? "Using instant HD for remaining clips to stay under the time budget."
+              : "Instant HD clip ready.",
+          });
+        }
       } catch (err) {
         if (abortReason === "Cancelled by user") throw err;
         console.warn("[splitter] primary path failed, retrying with instant copy", err);
-        try { await ff.deleteFile(clipName); } catch { /* noop */ }
+        try { await ff.deleteFile(instantName); } catch { /* noop */ }
+        try { await ff.deleteFile(polishedName); } catch { /* noop */ }
         if (!ffmpegInstance || activeAbort) {
           activeAbort = false;
           abortReason = null;
           ff = await getFFmpeg();
           await ff.writeFile(inputName, await fetchFile(file));
         }
-        await cutClipFastCopyFromFile(ff, inputName, clipName, w.start, dur);
-        mp4 = await readValidMp4(ff, clipName, i + 1);
+        try {
+          await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
+        } catch {
+          try { await ff.deleteFile(instantName); } catch { /* noop */ }
+          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+        }
+        mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
 
@@ -404,7 +524,8 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       });
       opts.onClip?.(results[results.length - 1]);
 
-      try { await ff.deleteFile(clipName); } catch { /* noop */ }
+      try { await ff.deleteFile(instantName); } catch { /* noop */ }
+      try { await ff.deleteFile(polishedName); } catch { /* noop */ }
     }
   } finally {
     ff.off("progress", onProgress);
@@ -413,7 +534,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
   notify({
     stage: "done", percent: 100, clipPercent: 100,
-    message: `Generated ${results.length} polished clip${results.length === 1 ? "" : "s"}.`,
+    message: `Generated ${results.length} ${opts.polish && !skipFurtherPolish ? "speed-polished" : "instant HD"} clip${results.length === 1 ? "" : "s"}.`,
   });
   return results;
 }
