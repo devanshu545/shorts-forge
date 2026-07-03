@@ -38,9 +38,6 @@ export type SplitOptions = {
   onProgress: (p: ClipProgress) => void;
   onClip?: (clip: ClipResult) => void;
   maxProcessingSeconds?: number;
-  // "auto" (default) mixes a copyright-free phonk-style musical bed under
-  // each clip during the polish encode. "off" preserves original audio only.
-  musicBed?: "auto" | "off";
 };
 
 export type ClipResult = {

@@ -65,7 +65,6 @@ function SplitPage() {
   const [maxClips, setMaxClips] = useState(5);
   const [smart4k, setSmart4k] = useState(false);
   const [polish, setPolish] = useState(true);
-  const [musicBed, setMusicBed] = useState(true);
   const [backupSource, setBackupSource] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
@@ -278,7 +277,6 @@ function SplitPage() {
         maxClips,
         resolution: smart4k ? "4k-smart" : "hd",
         polish,
-        musicBed: musicBed ? "auto" : "off",
         onProgress: setProgress,
         maxProcessingSeconds: 290,
         onClip: (clip) => {
@@ -381,14 +379,6 @@ function SplitPage() {
               </div>
               <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
-              <div className="min-w-0">
-                <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> Phonk music bed</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Copyright-free synthesized phonk under each clip. Unique per short, based on content mood.</p>
-              </div>
-              <Switch checked={musicBed} onCheckedChange={setMusicBed} />
-            </div>
-
 
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
