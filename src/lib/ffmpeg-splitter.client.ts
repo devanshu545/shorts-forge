@@ -534,7 +534,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
   notify({
     stage: "done", percent: 100, clipPercent: 100,
-    message: `Generated ${results.length} polished clip${results.length === 1 ? "" : "s"}.`,
+    message: `Generated ${results.length} ${opts.polish && !skipFurtherPolish ? "speed-polished" : "instant HD"} clip${results.length === 1 ? "" : "s"}.`,
   });
   return results;
 }
