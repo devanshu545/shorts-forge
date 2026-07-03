@@ -116,7 +116,7 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
     video.preload = "metadata";
     video.src = url;
     const loaded = await new Promise<boolean>((resolve) => {
-      video.onloadedmetadata = () => resolve();
+      video.onloadedmetadata = () => resolve(true);
       video.onerror = () => resolve(false);
       setTimeout(() => resolve(Boolean(video.videoWidth)), 5000);
     });
