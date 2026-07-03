@@ -338,7 +338,7 @@ function SplitPage() {
             {busy && uploadPct > 0 && uploadPct < 100 && (
               <div className="space-y-1">
                 <Progress value={uploadPct} className="h-2" />
-                <p className="text-xs text-muted-foreground">Uploading source to storage… {uploadPct}%</p>
+                <p className="text-xs text-muted-foreground">Backing up source in background… {uploadPct}% (splitting has already started, you don't need to wait)</p>
               </div>
             )}
 
