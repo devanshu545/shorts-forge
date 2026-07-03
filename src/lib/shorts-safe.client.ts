@@ -42,7 +42,30 @@ async function getFFmpeg(): Promise<FFmpeg> {
 }
 
 function logTail(lines = 10) {
-  return logs.slice(-lines).join(" | ") || "no ffmpeg log output";
+  const compact = logs
+    .slice(-lines)
+    .map((line) => line.replace(/Last message repeated \d+ times?/gi, "repeated decoder message"))
+    .filter((line, index, arr) => line && line !== arr[index - 1]);
+  const text = compact.join(" | ") || "no ffmpeg log output";
+  return text.length > 700 ? `${text.slice(0, 700)}…` : text;
+}
+
+async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetMs: number, label: string) {
+  let timeoutId = 0;
+  try {
+    return await Promise.race([
+      ff.exec(args, Math.max(5_000, budgetMs)),
+      new Promise<number>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          try { ff.terminate(); } catch { /* noop */ }
+          instance = null;
+          reject(new Error(`${label} took too long in this browser, so upload was stopped before it could get stuck.`));
+        }, budgetMs);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function readBlobMeta(blob: Blob): Promise<VideoMeta> {
@@ -87,9 +110,20 @@ function verticalBlurFilter(width: number, height: number, fps?: number) {
 }
 
 export async function fetchVideoBytes(url: string): Promise<Uint8Array> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Could not download MP4 for Shorts check (HTTP ${res.status})`);
-  return new Uint8Array(await res.arrayBuffer());
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Could not download MP4 for Shorts check (HTTP ${res.status})`);
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Downloading the video for Shorts check took too long. Please retry from the Library.");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k" = "hd"): Promise<ShortsSafeResult> {
@@ -97,9 +131,9 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
   const meta = await readBlobMeta(sourceBlob);
   if (meta.duration > 60.5) throw new Error(`YouTube Shorts must be 60 seconds or less. This file is ${Math.round(meta.duration)}s.`);
 
-  const targetW = target === "4k" ? 2160 : 1080;
-  const targetH = target === "4k" ? 3840 : 1920;
-  if (isShortsShape(meta) && meta.width === targetW && meta.height === targetH) {
+  const targetW = target === "4k" ? 2160 : 720;
+  const targetH = target === "4k" ? 3840 : 1280;
+  if (isShortsShape(meta)) {
     return { bytes, durationSeconds: meta.duration, changed: false };
   }
 
@@ -109,8 +143,10 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
   const outName = `shorts-out-${nonce}.mp4`;
   await ff.writeFile(inName, new Uint8Array(bytes));
   try {
-    const code = await ff.exec([
+    const code = await execWithBrowserBudget(ff, [
       "-y",
+      "-fflags", "+genpts+igndts+discardcorrupt",
+      "-err_detect", "ignore_err",
       "-i", inName,
       "-t", Math.min(meta.duration || 60, 60).toFixed(2),
       "-vf", verticalBlurFilter(targetW, targetH, 30),
@@ -126,7 +162,7 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
       "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
-    ]);
+    ], target === "4k" ? 120_000 : 55_000, "Shorts-safe conversion");
     if (code !== 0) throw new Error(`Shorts-safe encode failed (${code}): ${logTail()}`);
     const out = await ff.readFile(outName);
     const safe = out instanceof Uint8Array ? new Uint8Array(out) : new TextEncoder().encode(String(out));
@@ -142,10 +178,20 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
 }
 
 export async function uploadSignedMp4(signedUrl: string, bytes: Uint8Array) {
-  const payload = new FormData();
-  payload.append("cacheControl", "3600");
-  payload.append("", new Blob([bytes.slice().buffer as ArrayBuffer], { type: "video/mp4" }));
-  const res = await fetch(signedUrl, { method: "PUT", body: payload, headers: { "x-upsert": "true" } });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Shorts-safe upload failed (HTTP ${res.status}): ${text.slice(0, 500)}`);
+  await new Promise<void>((resolve, reject) => {
+    const payload = new FormData();
+    payload.append("cacheControl", "3600");
+    payload.append("", new Blob([bytes.slice().buffer as ArrayBuffer], { type: "video/mp4" }));
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", signedUrl, true);
+    xhr.timeout = 6 * 60 * 1000;
+    xhr.setRequestHeader("x-upsert", "true");
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Shorts-safe upload failed (HTTP ${xhr.status}): ${(xhr.responseText || "").slice(0, 500)}`));
+    };
+    xhr.onerror = () => reject(new Error("Network error while saving the Shorts-safe MP4."));
+    xhr.ontimeout = () => reject(new Error("Saving the Shorts-safe MP4 timed out. Please retry from the Library."));
+    xhr.send(payload);
+  });
 }

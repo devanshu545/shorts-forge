@@ -5,6 +5,7 @@ import { Loader2, Youtube, Wand2, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { commitShortsSafeVideo, createShortsSafeVideoUploadUrl, uploadVideoToYouTube } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
+import { loadShortsSafeTools } from "@/lib/shorts-safe-loader";
 
 type OneClickVideo = {
   id: string;
@@ -45,7 +46,7 @@ export function OneClickPublishButton({ video, hint, frames, onUploaded, size = 
 
       setStage("uploading");
       const safeInfo = await createSafeUpload({ data: { videoId: video.id } });
-      const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await import(/* @vite-ignore */ ("@/lib/shorts-safe" + ".client"));
+      const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await loadShortsSafeTools();
       const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
       const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
       if (safe.changed) {
