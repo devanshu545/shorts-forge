@@ -4,6 +4,14 @@ import { z } from "zod";
 import { pickTrendingTopic } from "@/lib/trending.server";
 import { CHARACTERS } from "@/lib/animation/character-short.functions";
 
+export const triggerWorkflowNow = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => z.object({ forceTest: z.boolean().default(true) }).parse(raw ?? {}))
+  .handler(async ({ data }) => {
+    const { triggerAutopilotWorkflow } = await import("@/lib/github-dispatch.server");
+    return triggerAutopilotWorkflow({ forceTest: data.forceTest });
+  });
+
 export const pickAutopilotTopic = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
