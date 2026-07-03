@@ -408,11 +408,11 @@ async function encodeFastPolishedClipFromShort(
     "fade=t=in:st=0:d=0.18",
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
-  const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
-    const code = await execWithBrowserBudget(ff, [
+  const vf = `${verticalCenterGraph(720, 1280, 18)},${tail}`;
+  const code = await execWithBrowserBudget(ff, [
     "-y",
-      "-fflags", "+genpts+igndts+discardcorrupt",
-      "-err_detect", "ignore_err",
+    "-fflags", "+genpts+igndts+discardcorrupt",
+    "-err_detect", "ignore_err",
     "-i", inputClipName,
     "-vf", vf,
     "-c:v", "libx264",
