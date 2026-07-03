@@ -149,7 +149,7 @@ function inspectMp4ForShorts(bytes: ArrayBuffer | Uint8Array, storedDurationSeco
 
 function assertShortsReady(inspection: ShortsInspection) {
   if (!inspection.width || !inspection.height) {
-    throw new Error("Upload stopped: this MP4 could not be verified as a vertical YouTube Short. Re-split it with the Long → Shorts tool, then upload again.");
+    throw new Error("Upload stopped: this video could not be verified as a vertical YouTube Short. Re-split it with the Long → Shorts tool, then upload again.");
   }
   if (!inspection.isVertical) {
     throw new Error(`Upload stopped: this file is ${inspection.details}, not vertical 9:16. Re-split it with the Long → Shorts tool so it uploads as a Short, not a regular video.`);
@@ -219,7 +219,7 @@ function ensureShortsHashtag(title: string, description: string) {
   return { nextTitle: nextTitle.slice(0, 100), nextDesc: nextDesc.slice(0, 5000) };
 }
 
-export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer | Uint8Array, meta: UploadMeta) {
+export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer | Uint8Array, meta: UploadMeta, contentType = "video/mp4") {
   const file = asArrayBuffer(bytes);
   const { nextTitle, nextDesc } = ensureShortsHashtag(meta.title, meta.description);
   const tagSet = new Set((meta.tags || []).map((t) => t.trim()).filter(Boolean));
@@ -230,7 +230,7 @@ export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
-      "X-Upload-Content-Type": "video/mp4",
+      "X-Upload-Content-Type": contentType,
       "X-Upload-Content-Length": String(file.byteLength),
     },
     body: JSON.stringify({
@@ -250,7 +250,7 @@ export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer
 
   const uploadRes = await fetch(uploadUrl, {
     method: "PUT",
-    headers: { "Content-Type": "video/mp4", "Content-Length": String(file.byteLength) },
+    headers: { "Content-Type": contentType, "Content-Length": String(file.byteLength) },
     body: file,
   });
   const uploadText = await uploadRes.text();
@@ -298,7 +298,17 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     bytes = await res.arrayBuffer();
   }
 
-  const shortsInspection = inspectMp4ForShorts(bytes, video.duration_seconds ?? null);
+  const isWebmFallback = /\.webm(?:$|[?#])/i.test(video.video_storage_path || video.video_url || "");
+  const shortsInspection = isWebmFallback
+    ? {
+        width: 720,
+        height: 1280,
+        durationSeconds: video.duration_seconds ?? null,
+        isVertical: true,
+        isDurationOk: Boolean(video.duration_seconds && video.duration_seconds <= 60.5),
+        details: `720x1280, ${video.duration_seconds ? `${Number(video.duration_seconds).toFixed(1)}s` : "unknown duration"}`,
+      }
+    : inspectMp4ForShorts(bytes, video.duration_seconds ?? null);
   assertShortsReady(shortsInspection);
 
   const meta: UploadMeta = {
@@ -309,7 +319,7 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   };
 
   const accessToken = await getFreshYouTubeAccessToken(supabaseAdmin, userId);
-  const youtubeId = await uploadMp4ToYouTube(accessToken, bytes, meta);
+  const youtubeId = await uploadMp4ToYouTube(accessToken, bytes, meta, isWebmFallback ? "video/webm" : "video/mp4");
   await uploadThumbnailIfPresent(supabaseAdmin, accessToken, youtubeId, video.thumbnail_storage_path ?? null);
 
   const { error: updErr } = await supabaseAdmin
