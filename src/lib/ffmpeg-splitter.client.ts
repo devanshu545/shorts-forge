@@ -281,7 +281,7 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -321,7 +321,7 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -354,7 +354,7 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -619,7 +619,7 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-      "-movflags", "+faststart",
+      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
     ]);

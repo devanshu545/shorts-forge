@@ -87,6 +87,16 @@ function pickWindows(duration, clipLen, maxClips, scenes) {
   return out;
 }
 
+function centeredShortFilter(width = 1080, height = 1920) {
+  return [
+    `split=2[bg][fg]`,
+    `[bg]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},boxblur=22:1[bg2]`,
+    `[fg]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg2]`,
+    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto`,
+    `fps=30,eq=saturation=1.12:contrast=1.045:brightness=0.01,unsharp=3:3:0.55:3:3:0.0`,
+  ].join(";");
+}
+
 async function fetchJob() {
   const url = EXPLICIT_ID
     ? `${BASE}/api/public/splitter/tick?longVideoId=${EXPLICIT_ID}`
@@ -147,11 +157,13 @@ async function processUpscaleJob(job) {
   await reportUpscaleProgress(job.clipId, 42, "Native 4K render started");
 
   const vf = [
-    "scale=2160:3840:force_original_aspect_ratio=increase:flags=lanczos",
-    "crop=2160:3840",
+    "split=2[bg][fg]",
+    "[bg]scale=2160:3840:force_original_aspect_ratio=increase:flags=lanczos,crop=2160:3840,boxblur=24:1[bg2]",
+    "[fg]scale=2160:3840:force_original_aspect_ratio=decrease:flags=lanczos[fg2]",
+    "[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto",
     "eq=saturation=1.08:contrast=1.035:brightness=0.005",
     "unsharp=5:5:0.85:5:5:0.0",
-  ].join(",");
+  ].join(";");
   run("ffmpeg", [
     "-y", "-i", src,
     "-vf", vf,
@@ -206,7 +218,7 @@ async function processJob(job) {
     console.log(`  · clip ${idx}: ${w.start.toFixed(1)} → ${w.end.toFixed(1)} (${clipDur}s)`);
     run("ffmpeg", [
       "-y", "-ss", String(w.start), "-i", src, "-t", clipDur,
-      "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30",
+      "-vf", centeredShortFilter(1080, 1920),
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out,
     ]);

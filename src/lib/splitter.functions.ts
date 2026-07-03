@@ -55,11 +55,22 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("long_videos")
-      .update({ status: "processing", error_message: null } as never)
+      .update({ status: "queued", error_message: null } as never)
       .eq("id", data.longVideoId)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
-    return { ok: true };
+
+    const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
+    const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
+    if (!dispatch.ok) {
+      await supabaseAdmin
+        .from("long_videos")
+        .update({ status: "failed", error_message: dispatch.message } as never)
+        .eq("id", data.longVideoId)
+        .eq("user_id", context.userId);
+      throw new Error(dispatch.message);
+    }
+    return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null };
   });
 
 export const createClipUploadUrls = createServerFn({ method: "POST" })
