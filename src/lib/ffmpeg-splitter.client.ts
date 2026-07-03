@@ -61,6 +61,7 @@ function probeDurationFromFile(file: File): Promise<number> {
 
 function pickWindows(duration: number, clipLen: number, maxClips: number) {
   const wins: Array<{ start: number; end: number }> = [];
+  if (!Number.isFinite(duration) || duration <= 0) return [{ start: 0, end: clipLen }];
   const usable = Math.max(0, duration - 1);
   if (usable <= clipLen) return [{ start: 0, end: Math.min(duration, clipLen) }];
   const gap = usable / (maxClips + 1);
@@ -191,6 +192,22 @@ async function encodeClip(
   }
 }
 
+async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Promise<Uint8Array> {
+  let mp4Data: Awaited<ReturnType<FFmpeg["readFile"]>>;
+  try {
+    mp4Data = await ff.readFile(clipName);
+  } catch (err) {
+    throw new Error(`Generated MP4 could not be read for clip ${clipIndex}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
+  }
+  const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
+  // Empty ffmpeg outputs can still be tiny MP4 containers (~260 bytes) with exit code 0.
+  // Treat those as failed so we retry from a safe start instead of showing a fake clip.
+  if (mp4.byteLength < 50_000) {
+    throw new Error(`Generated clip ${clipIndex} is empty (${mp4.byteLength} bytes). ${ffmpegLogTail()}`);
+  }
+  return mp4;
+}
+
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
   const preferred: EncodeTarget = opts.resolution === "4k" ? TARGETS["4k"] : TARGETS["1080p"];
   const fallback: EncodeTarget = opts.resolution === "4k" ? TARGETS["1440p"] : TARGETS["1080p"];
@@ -209,7 +226,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   };
 
   notify({ stage: "probing", message: "Reading video metadata…" });
-  const duration = (await probeDurationFromFile(file)) || 60;
+  const probedDuration = await probeDurationFromFile(file);
+  // If browser metadata probing fails, never assume 60s: that caused invalid
+  // start times on short uploads and produced 261-byte empty MP4s.
+  const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
   const ff = await getFFmpeg();
@@ -250,8 +270,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const clipName = `clip${i + 1}.mp4`;
 
       let usedTarget = preferred;
+      let mp4: Uint8Array | null = null;
       try {
         await encodeClip(ff, inputName, clipName, w.start, dur, preferred);
+        mp4 = await readValidMp4(ff, clipName, i + 1);
       } catch (err) {
         console.warn("[splitter] preferred target failed, retrying at fallback", err);
         notify({
@@ -260,16 +282,11 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           message: `${preferred.w}p failed for clip ${i + 1}, retrying at ${fallback.w}×${fallback.h}…`,
         });
         usedTarget = fallback;
+        try { await ff.deleteFile(clipName); } catch {}
         await encodeClip(ff, inputName, clipName, w.start, dur, fallback);
+        mp4 = await readValidMp4(ff, clipName, i + 1);
       }
-
-      let mp4Data: Awaited<ReturnType<FFmpeg["readFile"]>>;
-      try {
-        mp4Data = await ff.readFile(clipName);
-      } catch (err) {
-        throw new Error(`Generated MP4 could not be read for clip ${i + 1}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
-      }
-      const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
+      if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
       const thumb = await makeThumbnailFromMp4(mp4);
 
       results.push({
