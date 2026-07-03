@@ -222,7 +222,7 @@ export function BulkPublishPanel({
         patchRow(id, { status: "uploading", error: undefined });
         try {
           const safeInfo = await createSafeUpload({ data: { videoId: id } });
-          const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await import("@/lib/shorts-safe.client");
+          const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await import(/* @vite-ignore */ ("@/lib/shorts-safe" + ".client"));
           const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
           const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
           if (safe.changed) {
