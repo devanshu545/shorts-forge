@@ -26,7 +26,9 @@ import {
 } from "@/lib/splitter.functions";
 import { OneClickPublishButton } from "@/components/OneClickPublishButton";
 import { ClipProgress } from "@/components/ClipProgress";
+import { BulkPublishPanel } from "@/components/BulkPublishPanel";
 import type { ClipProgress as ClipProgressData, ClipResult, SplitOptions } from "@/lib/ffmpeg-splitter.types";
+
 
 export const Route = createFileRoute("/_authenticated/split")({ component: SplitPage });
 
@@ -485,6 +487,16 @@ function SplitPage() {
                 {!clips?.length ? (
                   <p className="mt-3 text-sm text-muted-foreground">Clips will appear here as they finish rendering.</p>
                 ) : (
+                  <>
+                    <BulkPublishPanel
+                      clips={clips}
+                      hintForClip={(c) =>
+                        `Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s.`
+                      }
+                      framesForClip={(c) => clipMeta[c.id]?.frames}
+                      onPublished={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
+                    />
+
                   <motion.div
                     className="mt-4 grid gap-4 md:grid-cols-2"
                     initial="hidden"
@@ -562,8 +574,10 @@ function SplitPage() {
                       );
                     })}
                   </motion.div>
+                  </>
                 )}
               </Card>
+
             </motion.div>
           )}
         </AnimatePresence>
