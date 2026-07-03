@@ -139,6 +139,7 @@ async function recordShortWithBrowser(
   video.muted = true;
   video.playsInline = true;
   video.preload = "auto";
+  let audioContext: AudioContext | null = null;
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -168,7 +169,6 @@ async function recordShortWithBrowser(
     }
     const thumbnailJpg = tctx ? await canvasToJpeg(thumbCanvas, 0.88) : await canvasToJpeg(canvas, 0.88);
 
-    let audioContext: AudioContext | null = null;
     let stream = canvas.captureStream(30);
     try {
       audioContext = new AudioContext();
@@ -225,6 +225,7 @@ async function recordShortWithBrowser(
     return { bytes, thumbnailJpg, frames, mimeType: "video/webm" };
   } finally {
     video.pause();
+    await audioContext?.close().catch(() => {});
     URL.revokeObjectURL(url);
   }
 }
