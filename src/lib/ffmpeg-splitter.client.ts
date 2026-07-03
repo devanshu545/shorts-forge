@@ -357,17 +357,18 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       let mp4: Uint8Array | null = null;
       const elapsed = (Date.now() - startedAt) / 1000;
       const remainingBudget = hardBudgetSec - elapsed;
+      const perClipBudget = Math.max(12, Math.min(55, Math.floor((remainingBudget - 20) / Math.max(windows.length - i, 1))));
 
       try {
-        if (opts.polish && remainingBudget > 45) {
+        if (opts.polish && remainingBudget > 30 && perClipBudget > 12) {
           let timeoutId = 0;
           await Promise.race([
             encodeFastPolishedClip(ff, inputName, clipName, w.start, dur),
             new Promise<never>((_, reject) => {
-              const timeoutMs = Math.max(20, Math.min(remainingBudget, 290)) * 1000;
+              const timeoutMs = perClipBudget * 1000;
               timeoutId = window.setTimeout(() => {
-                terminateActive("Fast polish hit the 5-minute budget; using instant HD fallback");
-                reject(new Error(abortReason || "Fast polish timed out"));
+                terminateActive("Fast polish exceeded its per-clip budget; using instant HD fallback");
+                reject(new Error(abortReason || "Fast polish switched to instant fallback"));
               }, timeoutMs);
             }),
           ]).finally(() => window.clearTimeout(timeoutId));
