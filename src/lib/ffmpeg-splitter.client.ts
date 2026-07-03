@@ -200,6 +200,10 @@ async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<{ jpg: Uint8Array;
 }
 
 // Instant stream-copy cut. Preserves source quality/resolution. ~1-2s per clip.
+// NOTE: We deliberately omit `-movflags +faststart` here. Faststart triggers a
+// second pass that loads the whole output into memory to relocate the moov
+// atom — on 4K/2160p60 sources this aborts ffmpeg.wasm with exit 69
+// ("Conversion failed! Aborted()"). Playback works fine without it.
 async function cutClipInstant(ff: FFmpeg, inputName: string, clipName: string, startSec: number, durSec: number) {
   const code = await ff.exec([
     "-y",
@@ -210,7 +214,7 @@ async function cutClipInstant(ff: FFmpeg, inputName: string, clipName: string, s
     "-map", "0:a?",
     "-c", "copy",
     "-avoid_negative_ts", "make_zero",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     clipName,
   ]);
   if (code !== 0) throw new Error(`instant copy exit ${code}: ${ffmpegLogTail()}`);
@@ -226,11 +230,12 @@ async function cutClipFastCopyFromFile(ff: FFmpeg, inputName: string, clipName: 
     "-map", "0:a?",
     "-c", "copy",
     "-avoid_negative_ts", "make_zero",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     clipName,
   ]);
   if (code !== 0) throw new Error(`fast copy exit ${code}: ${ffmpegLogTail()}`);
 }
+
 
 async function encodeCompatibilityClip(
   ff: FFmpeg,
