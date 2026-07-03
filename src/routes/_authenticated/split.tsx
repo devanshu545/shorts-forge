@@ -201,6 +201,40 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
+      const useNativeWorker = file.size > 100 * 1024 * 1024 || /(?:4k|2160|av1|60fps|60p)/i.test(file.name);
+
+      if (useNativeWorker) {
+        setProgress({
+          index: 1, total: 1, stage: "uploading",
+          percent: 1, clipPercent: 1, etaSeconds: null, fps: null, uploadMBps: null,
+          message: "Uploading 4K source for native splitting…",
+        });
+        await uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total, mbps) => {
+          const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
+          setUploadPct(pct);
+          setProgress({
+            index: 1, total: 1, stage: "uploading",
+            percent: pct, clipPercent: pct,
+            etaSeconds: mbps > 0 ? Math.round(((total - loaded) / 1024 / 1024) / mbps) : null,
+            fps: null, uploadMBps: mbps, uploadedBytes: loaded, totalBytes: total, updatedAt: Date.now(),
+            message: `Uploading 4K source for native splitter… ${pct}%`,
+          });
+        });
+        setUploadPct(100);
+        const dispatch = await queueFn({ data: { longVideoId: info.longVideoId } });
+        setProgress({
+          index: 1, total: 1, stage: "encoding",
+          percent: 8, clipPercent: 8, etaSeconds: 300, fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: "Native splitter queued. 4K/AV1 decoding now runs off-browser and clips will appear automatically.",
+        });
+        toast.success("Native splitter queued", {
+          description: dispatch.latestRunUrl ? "Worker started for this 4K video." : "Clips will appear here automatically.",
+        });
+        setFile(null);
+        qc.invalidateQueries({ queryKey: ["long-videos"] });
+        return;
+      }
+
       const uploadPromise = backupSource
         ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
             const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));

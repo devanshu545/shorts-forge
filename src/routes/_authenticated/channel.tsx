@@ -11,6 +11,7 @@ import {
   getYouTubeConnection,
   disconnectYouTube,
   refreshChannelStats,
+  syncYouTubeUploadState,
 } from "@/lib/youtube.functions";
 import {
   Tooltip,
@@ -36,6 +37,7 @@ function ChannelPage() {
   const getUrl = useServerFn(getYouTubeAuthUrl);
   const disconnect = useServerFn(disconnectYouTube);
   const refresh = useServerFn(refreshChannelStats);
+  const syncUploads = useServerFn(syncYouTubeUploadState);
   const [connecting, setConnecting] = useState(false);
 
   const { data: conn, isLoading } = useQuery({
@@ -58,7 +60,10 @@ function ChannelPage() {
   }, [search.connected, search.error]);
 
   const refreshMut = useMutation({
-    mutationFn: () => refresh({ data: {} }),
+    mutationFn: async () => {
+      await syncUploads();
+      return refresh({ data: {} });
+    },
     onSuccess: (r) => {
       setStats(r.stats);
       toast.success("Stats refreshed");

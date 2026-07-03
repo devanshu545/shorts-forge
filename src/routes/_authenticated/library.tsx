@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
 import { BulkPublishPanel, type BulkClip } from "@/components/BulkPublishPanel";
 import { generateMetadataForVideo, startVideoGeneration } from "@/lib/media.functions";
+import { syncYouTubeUploadState } from "@/lib/youtube.functions";
 import { Play, Trash2, Download, Copy, Upload, Library as LibraryIcon, Loader2, Search, Youtube, RefreshCw, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,6 +29,7 @@ function LibraryPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const genMeta = useServerFn(generateMetadataForVideo);
   const genVideo = useServerFn(startVideoGeneration);
+  const syncYouTube = useServerFn(syncYouTubeUploadState);
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("date" as "date" | "duration" | "title");
@@ -39,6 +41,7 @@ function LibraryPage() {
   const { data: videos, refetch, isLoading } = useQuery({
     queryKey: ["videos"],
     queryFn: async () => {
+      try { await syncYouTube(); } catch (err) { console.warn("YouTube sync skipped", err); }
       const { data, error } = await supabase.from("videos").select("*").order("created_at", { ascending: false });
       if (error) throw error;
       return data as Video[];

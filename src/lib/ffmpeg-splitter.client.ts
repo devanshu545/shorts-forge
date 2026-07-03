@@ -91,12 +91,12 @@ function pickWindows(duration: number, clipLen: number, maxClips: number) {
 // background and an original-aspect foreground centered on top. Prevents
 // horizontal cropping of the main subject when the source is landscape or
 // square, while still filling 9:16 for Shorts.
-function verticalCenterGraph(w: number, h: number, blur = 22): string {
+function verticalCenterGraph(w: number, h: number, blur = 22, out = "vout"): string {
   return [
     `split=2[bg][fg]`,
     `[bg]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${w}:${h},boxblur=${blur}:1[bg2]`,
     `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=fast_bilinear[fg2]`,
-    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto`,
+    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto[${out}]`,
   ].join(";");
 }
 
@@ -109,7 +109,7 @@ function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
     "fade=t=in:st=0:d=0.3",
     `fade=t=out:st=${fadeOutStart}:d=0.4`,
   ].join(",");
-  return `${verticalCenterGraph(w, h)},${tail}`;
+  return `${verticalCenterGraph(w, h, 22, "centered")};[centered]${tail}[vout]`;
 }
 
 function compactPolishFilter(): string {
@@ -269,9 +269,9 @@ async function encodeCompatibilityClip(
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
-    "-map", "0:v:0",
+    "-filter_complex", verticalCenterGraph(1080, 1920),
+    "-map", "[vout]",
     "-map", "0:a?",
-    "-vf", verticalCenterGraph(1080, 1920),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -281,7 +281,7 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -306,11 +306,13 @@ async function encodeFastPolishedClipFromShort(
     "fade=t=in:st=0:d=0.18",
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
-  const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
+  const vf = `${verticalCenterGraph(1080, 1920, 22, "centered")};[centered]${tail}[vout]`;
   const code = await ff.exec([
     "-y",
     "-i", inputClipName,
-    "-vf", vf,
+    "-filter_complex", vf,
+    "-map", "[vout]",
+    "-map", "0:a?",
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -321,7 +323,7 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -343,7 +345,9 @@ async function encodePolishedClip(
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
-    "-vf", vf,
+    "-filter_complex", vf,
+    "-map", "[vout]",
+    "-map", "0:a?",
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -354,7 +358,7 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ]);
@@ -619,7 +623,7 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-      "-movflags", "+faststart",
+      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
     ]);
