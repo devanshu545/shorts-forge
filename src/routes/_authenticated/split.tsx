@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
-import { Scissors, UploadCloud, Loader2, Youtube, Trash2, RefreshCw, Sparkles, Zap } from "lucide-react";
+import { Scissors, UploadCloud, Loader2, Trash2, RefreshCw, Sparkles, Zap, Wand2, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createLongVideoUploadUrl,
@@ -25,7 +25,7 @@ import {
 } from "@/lib/splitter.functions";
 import { OneClickPublishButton } from "@/components/OneClickPublishButton";
 import { ClipProgress } from "@/components/ClipProgress";
-import type { ClipProgress as ClipProgressData, SplitOptions } from "@/lib/ffmpeg-splitter.types";
+import type { ClipProgress as ClipProgressData, ClipResult, SplitOptions } from "@/lib/ffmpeg-splitter.types";
 
 export const Route = createFileRoute("/_authenticated/split")({ component: SplitPage });
 
@@ -34,6 +34,18 @@ const runBrowserSplitter = createClientOnlyFn((file: File, opts: SplitOptions) =
     splitVideoInBrowser(file, opts),
   ),
 );
+
+const runUpscale = createClientOnlyFn((mp4: Uint8Array, onProg: (pct: number) => void) =>
+  import("@/lib/ffmpeg-splitter.client").then(({ upscaleClipTo4K }) => upscaleClipTo4K(mp4, onProg)),
+);
+
+type ClipMeta = {
+  clipId: string;
+  frames: string[];
+  storagePath: string;
+  mp4: Uint8Array;
+  upscale: { state: "idle" | "running" | "done" | "failed"; pct: number; error?: string };
+};
 
 function SplitPage() {
   const qc = useQueryClient();
@@ -48,11 +60,14 @@ function SplitPage() {
   const [file, setFile] = useState<File | null>(null);
   const [clipLength, setClipLength] = useState(55);
   const [maxClips, setMaxClips] = useState(5);
-  const [is4k, setIs4k] = useState(false);
+  const [smart4k, setSmart4k] = useState(false);
+  const [polish, setPolish] = useState(true);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [progress, setProgress] = useState<ClipProgressData | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Per-clip local metadata (frames for AI titles, upscale state).
+  const [clipMeta, setClipMeta] = useState<Record<string, ClipMeta>>({});
 
   const { data: jobs } = useQuery({
     queryKey: ["long-videos"],
@@ -76,13 +91,50 @@ function SplitPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const runBackground4KQueue = async (items: ClipResult[], stored: Record<number, { clipId: string; path: string }>) => {
+    for (let i = 0; i < items.length; i++) {
+      const clip = items[i];
+      const info = stored[clip.index];
+      if (!info) continue;
+      setClipMeta((m) => ({
+        ...m,
+        [info.clipId]: { ...m[info.clipId], upscale: { state: "running", pct: 0 } },
+      }));
+      try {
+        const upscaled = await runUpscale(clip.mp4, (pct) => {
+          setClipMeta((m) => ({
+            ...m,
+            [info.clipId]: { ...m[info.clipId], upscale: { state: "running", pct } },
+          }));
+        });
+        const up = await supabase.storage
+          .from("videos")
+          .upload(info.path, upscaled, { contentType: "video/mp4", upsert: true });
+        if (up.error) throw new Error(up.error.message);
+        setClipMeta((m) => ({
+          ...m,
+          [info.clipId]: { ...m[info.clipId], upscale: { state: "done", pct: 100 } },
+        }));
+        qc.invalidateQueries({ queryKey: ["long-clips", selectedId] });
+      } catch (err) {
+        console.warn("[upscale] failed", err);
+        setClipMeta((m) => ({
+          ...m,
+          [info.clipId]: {
+            ...m[info.clipId],
+            upscale: { state: "failed", pct: 0, error: err instanceof Error ? err.message : "upscale failed" },
+          },
+        }));
+      }
+    }
+  };
+
   const startUpload = async () => {
     if (!file) return;
     setBusy(true);
     setUploadPct(2);
     let longVideoId: string | null = null;
     try {
-      // 1. Upload source to storage
       const info = await createFn({ data: {
         filename: file.name,
         sizeBytes: file.size,
@@ -100,31 +152,27 @@ function SplitPage() {
       qc.invalidateQueries({ queryKey: ["long-videos"] });
       setSelectedId(info.longVideoId);
 
-      // 2. Split in browser via ffmpeg.wasm
       const results = await runBrowserSplitter(file, {
         clipLength,
         maxClips,
-        resolution: is4k ? "4k" : "1080p",
+        resolution: smart4k ? "4k-smart" : "hd",
+        polish,
         onProgress: setProgress,
       });
 
-      // 3. Upload each clip + register
       const { data: userData } = await supabase.auth.getUser();
       const userId = userData.user?.id;
       if (!userId) throw new Error("Not signed in");
+
+      const storedByIndex: Record<number, { clipId: string; path: string }> = {};
 
       for (let i = 0; i < results.length; i++) {
         const clip = results[i];
         const t0 = Date.now();
         setProgress({
-          index: i + 1,
-          total: results.length,
-          stage: "uploading",
+          index: i + 1, total: results.length, stage: "uploading",
           percent: Math.round((i / results.length) * 100),
-          clipPercent: 0,
-          etaSeconds: null,
-          fps: null,
-          uploadMBps: null,
+          clipPercent: 0, etaSeconds: null, fps: null, uploadMBps: null,
           message: `Uploading clip ${i + 1} of ${results.length} to storage…`,
         });
         const clipId = crypto.randomUUID();
@@ -151,29 +199,40 @@ function SplitPage() {
           durationSeconds: clip.endSeconds - clip.startSeconds,
           fileSizeBytes: clip.mp4.byteLength,
         } });
+
+        storedByIndex[clip.index] = { clipId, path: videoPath };
+        setClipMeta((m) => ({
+          ...m,
+          [clipId]: {
+            clipId,
+            frames: clip.frames,
+            storagePath: videoPath,
+            mp4: clip.mp4,
+            upscale: { state: smart4k ? "idle" : "done", pct: smart4k ? 0 : 100 },
+          },
+        }));
         qc.invalidateQueries({ queryKey: ["long-clips", info.longVideoId] });
       }
 
       await finishFn({ data: { longVideoId: info.longVideoId, status: "ready" } });
       qc.invalidateQueries({ queryKey: ["long-videos"] });
       setProgress({
-        index: results.length,
-        total: results.length,
-        stage: "done",
-        percent: 100,
-        clipPercent: 100,
-        etaSeconds: 0,
-        fps: null,
-        uploadMBps: null,
-        message: `✅ ${results.length} clip${results.length === 1 ? "" : "s"} ready. Click "Publish" to auto-post to YouTube.`,
+        index: results.length, total: results.length, stage: "done",
+        percent: 100, clipPercent: 100, etaSeconds: 0, fps: null, uploadMBps: null,
+        message: `✅ ${results.length} clip${results.length === 1 ? "" : "s"} ready. AI titles generate on publish.`,
       });
       toast.success(`Generated ${results.length} short${results.length === 1 ? "" : "s"}`);
       setFile(null);
+
+      if (smart4k) {
+        toast.info("Upgrading clips to 4K in the background…");
+        void runBackground4KQueue(results, storedByIndex);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
       toast.error(msg);
       if (longVideoId) {
-        try { await finishFn({ data: { longVideoId, status: "failed", errorMessage: msg } }); } catch {}
+        try { await finishFn({ data: { longVideoId, status: "failed", errorMessage: msg } }); } catch { /* noop */ }
       }
       setProgress((p) => p ? { ...p, stage: "error", message: msg } : null);
     } finally {
@@ -196,7 +255,7 @@ function SplitPage() {
             </Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Upload any MP4. Instant mode cuts Shorts in minutes without slow re-rendering.
+            Cinematic polish, AI titles from real frames, optional smart 4K in the background.
           </p>
 
           <div className="mt-6 space-y-5">
@@ -239,10 +298,18 @@ function SplitPage() {
 
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
-                <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> True 4K render</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Slow export. Keep off for instant Shorts under 5 minutes.</p>
+                <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Lanczos scale, sharpen, color boost, vignette, fade in/out. Adds ~30s per clip.</p>
               </div>
-              <Switch checked={is4k} onCheckedChange={setIs4k} />
+              <Switch checked={polish} onCheckedChange={setPolish} />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+              <div className="min-w-0">
+                <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> Smart 4K</Label>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Clips appear in HD instantly, then upgrade to 4K in the background. No waiting.</p>
+              </div>
+              <Switch checked={smart4k} onCheckedChange={setSmart4k} />
             </div>
 
             {busy && uploadPct > 0 && uploadPct < 100 && (
@@ -258,7 +325,7 @@ function SplitPage() {
 
             <Button onClick={startUpload} disabled={!file || busy} className="w-full">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}
-              {busy ? "Working…" : is4k ? "Render 4K Shorts" : "Create Instant Shorts"}
+              {busy ? "Working…" : "Create Shorts"}
             </Button>
           </div>
         </Card>
@@ -347,34 +414,51 @@ function SplitPage() {
                       youtube_video_id: string | null;
                       clip_start_seconds: number | null;
                       clip_end_seconds: number | null;
-                    }) => (
-                      <motion.div
-                        key={c.id}
-                        variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
-                        whileHover={{ y: -2 }}
-                        className="rounded-xl border border-border/60 bg-background/40 p-3 transition hover:border-primary/40 hover:shadow-[0_0_20px_-10px_theme(colors.primary.DEFAULT)]"
-                      >
-                        {c.video_url ? (
-                          <video src={c.video_url} controls className="aspect-[9/16] w-full rounded-lg border border-border object-cover bg-black" />
-                        ) : (
-                          <div className="grid aspect-[9/16] place-items-center text-xs text-muted-foreground">Rendering…</div>
-                        )}
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">{c.title}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {Math.round(c.clip_start_seconds ?? 0)}s → {Math.round(c.clip_end_seconds ?? 0)}s
+                    }) => {
+                      const meta = clipMeta[c.id];
+                      const upscaleState = meta?.upscale;
+                      return (
+                        <motion.div
+                          key={c.id}
+                          variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
+                          whileHover={{ y: -2 }}
+                          className="rounded-xl border border-border/60 bg-background/40 p-3 transition hover:border-primary/40 hover:shadow-[0_0_20px_-10px_theme(colors.primary.DEFAULT)]"
+                        >
+                          {c.video_url ? (
+                            <video src={c.video_url} controls className="aspect-[9/16] w-full rounded-lg border border-border object-cover bg-black" />
+                          ) : (
+                            <div className="grid aspect-[9/16] place-items-center text-xs text-muted-foreground">Rendering…</div>
+                          )}
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">{c.title}</div>
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <span>{Math.round(c.clip_start_seconds ?? 0)}s → {Math.round(c.clip_end_seconds ?? 0)}s</span>
+                                {upscaleState?.state === "running" && (
+                                  <Badge variant="secondary" className="gap-1 text-[10px]">
+                                    <Loader2 className="h-3 w-3 animate-spin" /> 4K {upscaleState.pct}%
+                                  </Badge>
+                                )}
+                                {upscaleState?.state === "done" && (
+                                  <Badge variant="default" className="gap-1 text-[10px]">
+                                    <CheckCircle2 className="h-3 w-3" /> 4K Ready
+                                  </Badge>
+                                )}
+                                {upscaleState?.state === "failed" && (
+                                  <Badge variant="destructive" className="text-[10px]">HD only</Badge>
+                                )}
+                              </div>
                             </div>
+                            <OneClickPublishButton
+                              video={c}
+                              frames={meta?.frames}
+                              hint={`Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s.`}
+                              onUploaded={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
+                            />
                           </div>
-                          <OneClickPublishButton
-                            video={c}
-                            hint={`Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s. Original clip title: ${c.title || "untitled"}. Generate a viral YouTube Shorts title, description and tags that match the likely content of this segment.`}
-                            onUploaded={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
-                          />
-
-                        </div>
-                      </motion.div>
-                    ))}
+                        </motion.div>
+                      );
+                    })}
                   </motion.div>
                 )}
               </Card>
