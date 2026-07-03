@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
-import type { ClipProgress as ClipProgressData } from "@/lib/ffmpeg-splitter.client";
+import type { ClipProgress as ClipProgressData } from "@/lib/ffmpeg-splitter.types";
 
 function formatEta(sec: number | null) {
   if (!sec || sec < 0) return "—";
