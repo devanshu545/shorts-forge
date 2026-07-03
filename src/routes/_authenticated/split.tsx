@@ -225,11 +225,17 @@ function SplitPage() {
         setProgress({
           index: 1, total: 1, stage: "encoding",
           percent: 8, clipPercent: 8, etaSeconds: 300, fps: null, uploadMBps: null, updatedAt: Date.now(),
-          message: "Native splitter queued. 4K/AV1 decoding now runs off-browser and clips will appear automatically.",
+          message: dispatch.dispatchMessage
+            ? "Native splitter is queued. If instant start is delayed, the scheduled worker will pick it up automatically."
+            : "Native splitter queued. 4K/AV1 decoding now runs off-browser and clips will appear automatically.",
         });
-        toast.success("Native splitter queued", {
-          description: dispatch.latestRunUrl ? "Worker started for this 4K video." : "Clips will appear here automatically.",
-        });
+        if (dispatch.dispatchMessage) {
+          toast.info("Native splitter queued", { description: "Instant worker start was delayed, but the job was kept queued." });
+        } else {
+          toast.success("Native splitter queued", {
+            description: dispatch.latestRunUrl ? "Worker started for this 4K video." : "Clips will appear here automatically.",
+          });
+        }
         setFile(null);
         qc.invalidateQueries({ queryKey: ["long-videos"] });
         return;
