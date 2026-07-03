@@ -79,17 +79,29 @@ function pickWindows(duration: number, clipLen: number, maxClips: number) {
 //     frame — this alone was ~25-35% of old encode time.
 //   - unsharp kernel dropped from 5x5 to 3x3 (~3x cheaper) with matched strength.
 //   - eq combined into a single pass with saturation+contrast.
+// Subject-centered vertical layout: splits input into a blurred cover-fit
+// background and an original-aspect foreground centered on top. Prevents
+// horizontal cropping of the main subject when the source is landscape or
+// square, while still filling 9:16 for Shorts.
+function verticalCenterGraph(w: number, h: number, blur = 22): string {
+  return [
+    `split=2[bg][fg]`,
+    `[bg]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${w}:${h},boxblur=${blur}:1[bg2]`,
+    `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=fast_bilinear[fg2]`,
+    `[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto`,
+  ].join(";");
+}
+
 function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
   const fadeOutStart = Math.max(clipDurationSec - 0.5, 0.1).toFixed(2);
-  return [
-    `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=fast_bilinear`,
-    `crop=${w}:${h}`,
+  const tail = [
     "unsharp=3:3:0.8:3:3:0.0",
     "eq=saturation=1.18:contrast=1.06:brightness=0.02",
     "vignette=PI/6:eval=init",
     "fade=t=in:st=0:d=0.3",
     `fade=t=out:st=${fadeOutStart}:d=0.4`,
   ].join(",");
+  return `${verticalCenterGraph(w, h)},${tail}`;
 }
 
 function compactPolishFilter(): string {
