@@ -1,92 +1,75 @@
-# Autopilot: Custom Times + Feature Menu
+## Plan: Server-Triggered Autopilot + Long-Video → Shorts Splitter
 
-## Part 1 — Custom schedule times (dynamic)
+### Part 1 — Server-triggered GitHub workflow
 
-Today the schedule is hardcoded to 3 hour-slots picked from a fixed dropdown. Rework it so you can add/remove any number of times and each time is picked freely.
+**Secret wiring**
+- Reuse the existing `GITHUB_FINE_GRAINED_PERSONAL_ACCESS_TOKEN` secret (already stored). Also mirror it as `GITHUB_DISPATCH_TOKEN` for a clearer name, plus store `GITHUB_REPO=devanshu545/shorts-forge` via `set_secret`. No user form needed.
 
-### UI changes (`/autopilot` settings card)
+**New server helper** `src/lib/github-dispatch.server.ts`
+- `triggerAutopilotWorkflow({ forceTest }: { forceTest: boolean })` → POSTs to `https://api.github.com/repos/devanshu545/shorts-forge/actions/workflows/autopilot.yml/dispatches` with `Authorization: Bearer <token>` and body `{ ref: "main", inputs: { force_test: "true"|"false" } }`.
+- Returns `{ ok, status, message }`; surfaces GitHub error bodies for debugging.
 
-- Replace "Videos per day" slider + fixed hour selects with a **dynamic time list**:
-  - `+ Add time` button appends a new row.
-  - Each row: a native `<input type="time">` (HH:MM) + a delete button.
-  - Reorder-safe (sorted on save), min 1 / max 8 rows.
-- Timezone select stays as-is (defaults to browser tz).
-- "Videos per day" becomes a read-only derived count from the list length.
-- Save button pushes the full list; UI reflects it immediately (optimistic update) and re-queries health so upcoming slots refresh.
+**New protected server fn** in `src/lib/autopilot.functions.ts`
+- `triggerWorkflowNow` (uses `requireSupabaseAuth`, calls helper with `forceTest: true`).
+- Also add `dispatchDueSlotNow` used by the health card "Any moment now…" state — same helper, `forceTest: false`.
 
-### Backend / data changes
+**UI wiring** in `src/routes/_authenticated/autopilot.tsx`
+- Replace the existing "Run Workflow (GitHub)" instruction/link with a real button that calls `triggerWorkflowNow` via `useServerFn`, shows toast with dispatch status, then polls `getAutopilotHealth` for 60s to reflect the new run.
+- Health card gains a "Trigger now" button when a slot is overdue > 2 min.
 
-- `autopilot_settings.slot_hours` (int[]) → add new column `slot_times text[]` storing `"HH:MM"` strings. Keep `slot_hours` for backward compat, auto-derived from `slot_times` on save.
-- `saveAutopilotSettings` Zod schema accepts `slot_times: string[]` (regex `^([01]\d|2[0-3]):[0-5]\d$`), 1–8 entries; derives `slot_hours` = unique hours.
-- `computeUpcomingSlots` (health) uses `slot_times` for minute precision.
-- Tick endpoint `isSlotDue`: matches current local `HH:MM` against `slot_times` within a ±5 min window (since cron runs hourly, see caveat below).
+**Heartbeat/health**
+- No schema change. Health already reads `autopilot_heartbeats` via `supabaseAdmin`. Add a "Last dispatch" field to the health card sourced from a new `autopilot_dispatches` lightweight log (optional — can skip and just rely on GitHub run URL returned by dispatch API; keeping it simple: skip the extra table, show returned run info in a toast + link to Actions page).
 
-### ⚠️ Important scheduling caveat (must decide)
-
-GitHub Actions cron currently runs **once per hour** (`0 * * * *`). That means:
-
-- **Option A (recommended, no cost):** keep hourly cron. Minute values are honored to the nearest hour — a time of `09:35` fires in the `09:00` run. Simple, free, reliable.
-- **Option B (true minute precision):** change cron to `*/5 * * * *` (every 5 min). Uses ~12× more GitHub Actions minutes but still well within the free tier for a personal repo. Fires within 5 min of chosen time.
-- **Option C:** every 15 min (`*/15 * * * *`). Middle ground.
-
-I'll implement **Option B** by default unless you say otherwise — it makes the "choose any time" feature actually feel dynamic.
+**Success criteria**
+- Clicking Run Workflow in the app returns 204 from GitHub, the Actions run appears within seconds, heartbeat updates, and a Short uploads without opening GitHub.
 
 ---
 
-## Part 2 — Feature menu (pick what to build next)
+### Part 2 — Long MP4 → multiple Shorts splitter
 
-Below are features that are **realistic to build** on the current free stack (GitHub Actions + Lovable Cloud + Lovable AI + Pollinations + YouTube API). Each notes cost/risk so you can pick safely.
+**Where**
+- New route: `src/routes/_authenticated/split.tsx` ("Long → Shorts"). Sidebar entry added in `src/components/app-sidebar.tsx`.
 
-### Scheduling & automation
+**Upload path (client)**
+- Drag-drop MP4 (up to ~500 MB). Upload directly to Supabase `videos` bucket at `long-source/<userId>/<uuid>.mp4` using resumable client upload; store metadata row in a new `long_videos` table (id, user_id, source_path, duration, status, created_at).
 
-1. **Custom per-slot settings** — different character / genre / voice per time slot (e.g. funny at 9am, emotional at 8pm).
-2. **Pause days** — checkbox for days of week the autopilot skips (e.g. no Sundays).
-3. **Auto-pause on failure streak** — if 3 uploads fail in a row, disable autopilot and notify.
-4. **"Catch up" mode** — if a slot was missed (YouTube outage, quota), auto-retry within the next hour.
-5. **Manual queue** — write a topic in a text box; it becomes the next scheduled upload, jumping the trending picker.
+**Server-side split** — runs on GitHub Actions worker (ffmpeg already installed there)
+- New public route `src/routes/api/public/splitter/tick.tsx` (OIDC-authorized like autopilot). Returns next queued `long_videos` job with a signed download URL + user preferences.
+- New script `scripts/splitter-runner.mjs`:
+  1. Downloads source MP4.
+  2. Runs `ffprobe` to get duration.
+  3. Detects scenes (`ffmpeg -vf select='gt(scene,0.4)'`) OR falls back to fixed windows.
+  4. Chooses N clips of 30–59 s (user configurable: 30/45/59, default 55).
+  5. For each clip: `ffmpeg -ss X -to Y -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30" -c:v libx264 -crf 20 -preset veryfast -c:a aac -b:a 128k -movflags +faststart` → vertical 1080×1920 Short.
+  6. Uploads each clip to `videos` bucket, creates a `videos` row (status=`ready`, `source: "split"`, links back to `long_video_id`).
+- New GitHub workflow `.github/workflows/splitter.yml` (cron every 10 min + workflow_dispatch), invoked on demand by a new server fn `triggerSplitterWorkflow` (same dispatch helper).
 
-### Content quality
+**UI**
+- Split page shows: upload zone, per-video job status, list of generated Shorts with preview + "Upload to YouTube" button (reuses existing `UploadToYouTubeDialog`).
+- Options before submit: clip length (30/45/59 s), max clips (1–10), auto-caption toggle (adds burned karaoke captions using existing caption renderer — optional v2).
 
-6. **Series mode** — every N videos forms a "Part 1/2/3" chain with the same character storyline.
-7. **Multi-character mode** — pick 2–3 characters; each short randomly stars one for variety.
-8. **Style presets** — swap image prompt style (Pixar / anime / claymation / paper cutout) per short or per slot.
-9. **Trending topic sources** — add Reddit r/AskReddit + Google Trends RSS on top of current source for richer topics.
-10. **Voice variety** — rotate through multiple TTS voices per short instead of one fixed voice.
-11. **Background music library** — pick a mood (chill / epic / funny) per genre instead of the synthesized bed.
+**DB migration**
+```sql
+create table public.long_videos (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  source_path text not null,
+  duration_seconds int,
+  clip_length int not null default 55,
+  max_clips int not null default 5,
+  status text not null default 'queued',
+  error_message text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- GRANTs + RLS (owner-only), plus link column on videos: alter table public.videos add column long_video_id uuid references public.long_videos(id) on delete set null;
+```
 
-### Analytics & feedback loop
-
-12. **Per-video performance card** — pull YouTube Analytics API views/likes/CTR per autopilot short, show in Library.
-13. **Best-time recommender** — after 30 uploads, suggest your 3 best-performing slot times.
-14. **A/B title testing** — generate 2 titles, upload with title A, auto-swap to title B after 6h if views are low.
-15. **Auto-delete flops** — after 7 days, hide/unlist shorts with <50 views (optional toggle).
-
-### UX in the app
-
-16. **Live "next upload" countdown** on the Autopilot page.
-17. **Preview a slot** — click a slot to instantly render a preview of what *would* be uploaded at that time (no upload).
-18. **Notification center** — in-app bell with autopilot events (uploaded, skipped, failed).
-19. **Export schedule as .ics** — subscribe to your upload calendar from Google Calendar.
-
-### Reach / SEO
-
-20. **Auto-generated end-screen CTA** rotating between "Subscribe", "Watch part 2", "Comment your guess".
-21. **Comment seeding** — auto-post the first comment (a question) on each upload to prime engagement.
-22. **Hashtag rotator** — pool of 50 viral hashtags, pick 3 per upload to avoid YouTube spam-flagging.
-23. **Community post** — after each Short, auto-post a poll to the YouTube Community tab teasing the next one.
-
-### ❌ Not recommending (won't work reliably free)
-
-- Real Veo/Sora video generation (paid + quota).
-- Cross-post to TikTok/Instagram (their APIs require business review, unreliable free).
-- Real-time trending scraping from TikTok (blocked, breaks weekly).
+**Success criteria**
+- Upload a 5-min MP4 → within ~3 min, 5 vertical 1080×1920 Shorts appear in library, each playable, each uploadable to YouTube via existing dialog.
 
 ---
 
-## What I need from you
-
-1. **Confirm Part 1** — build the custom-time UI + switch cron to every 5 min (Option B)? Or stick with hourly?
-2. **Pick features from Part 2** — list the numbers you want. I'll build them in the next plan(s), grouped for minimal credit use.   
-  do all in this one 
-    
-  Redesign ONLY the UI/UX of the entire application. Do NOT modify, remove, or refactor any existing backend logic, APIs, database schema, authentication, routing, state management, AI pipeline, rendering pipeline, business logic, event handlers, or any working functionality. The application is currently functional, and I want a visual overhaul only. Replace the current blue theme with a premium Apple-inspired Liquid Glass / Glassmorphism design featuring frosted glass panels, translucent backgrounds, backdrop blur, subtle gradients, soft borders, realistic reflections, elegant shadows, rounded corners, and depth. Add smooth, GPU-accelerated animations throughout the interface, including page transitions, hover effects, button interactions, cards, dialogs, sidebars, loading states, progress indicators, modals, dropdowns, inputs, navigation, and micro-interactions. Support both dark and light themes with beautiful dynamic glass effects and modern typography. Make the UI feel like a premium macOS/iOS application with polished motion and fluid animations while maintaining excellent performance and responsiveness. Do NOT break any existing functionality, change API calls, alter component behavior, rename IDs/classes relied upon by the application, or introduce regressions. The only goal is to transform the visual design into a premium animated glassmorphism interface while preserving 100% of the existing functionality.  
+### Out of scope (for this plan)
+- Auto-captioning of split clips (can be added in a follow-up).
+- Trimming inside the browser (ffmpeg.wasm) — too slow/OOM for long MP4s; server path is more reliable.
