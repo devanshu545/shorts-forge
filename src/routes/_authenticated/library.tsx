@@ -211,12 +211,17 @@ function LibraryPage() {
   );
 }
 
-function VideoCard({ video, onOpen, onDelete, onCopy, onRegenerate, regenerating, onUploaded }: { video: Video; onOpen: () => void; onDelete: () => void; onCopy: (l: string, t?: string | null) => void; onRegenerate: () => void; regenerating: boolean; onUploaded: () => void }) {
-  return <Card className="glass group overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:border-primary/40">
-    <button type="button" onClick={onOpen} className="relative block aspect-[9/16] w-full bg-surface-2 text-left">
+function VideoCard({ video, onOpen, onDelete, onCopy, onRegenerate, regenerating, onUploaded, bulkMode = false, bulkChecked = false, onBulkToggle }: { video: Video; onOpen: () => void; onDelete: () => void; onCopy: (l: string, t?: string | null) => void; onRegenerate: () => void; regenerating: boolean; onUploaded: () => void; bulkMode?: boolean; bulkChecked?: boolean; onBulkToggle?: (checked: boolean) => void }) {
+  return <Card className={`glass group overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:border-primary/40 ${bulkMode && bulkChecked ? "ring-2 ring-primary" : ""}`}>
+    <button type="button" onClick={() => bulkMode ? onBulkToggle?.(!bulkChecked) : onOpen()} className="relative block aspect-[9/16] w-full bg-surface-2 text-left">
       {video.thumbnail_url ? <img src={video.thumbnail_url} alt={video.title} className="h-full w-full object-cover" /> : video.video_url ? <video src={video.video_url} className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-muted-foreground"><Play className="h-8 w-8" /></div>}
       <span className="absolute left-2 top-2 rounded-full bg-background/70 px-2 py-0.5 text-[10px] uppercase tracking-wide backdrop-blur">{video.status}</span>
-      {video.youtube_video_id && <Badge className="absolute right-2 top-2">Uploaded</Badge>}
+      {bulkMode && (
+        <span className="absolute right-2 top-2 rounded-md bg-background/80 p-1 backdrop-blur">
+          <Checkbox checked={bulkChecked} onCheckedChange={(v) => onBulkToggle?.(!!v)} onClick={(e) => e.stopPropagation()} />
+        </span>
+      )}
+      {!bulkMode && video.youtube_video_id && <Badge className="absolute right-2 top-2">Uploaded</Badge>}
       {video.duration_seconds && <span className="absolute bottom-2 right-2 rounded bg-background/80 px-2 py-0.5 text-xs">{video.duration_seconds}s</span>}
       {video.generation_progress > 0 && video.status === "generating_video" && <Progress value={video.generation_progress} className="absolute bottom-0 left-0 right-0 h-1" />}
     </button>
