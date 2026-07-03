@@ -3,6 +3,38 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 import type { ClipProgress, ClipResult, SplitOptions } from "./ffmpeg-splitter.types";
+import { generatePhonkBed, pickMoodFromTitle, seedFor } from "./audio/phonk-bed";
+
+// Kill-switch: flip to false to instantly disable music bed if a regression appears.
+const ENABLE_MUSIC_BED = true;
+
+async function buildBedForClip(
+  ff: FFmpeg,
+  clipIndex: number,
+  aiTitle: string,
+  startSeconds: number,
+  durSec: number,
+): Promise<string | null> {
+  if (!ENABLE_MUSIC_BED) return null;
+  try {
+    const seed = seedFor(clipIndex, aiTitle, startSeconds);
+    const mood = pickMoodFromTitle(aiTitle);
+    const started = Date.now();
+    const wav = await Promise.race([
+      generatePhonkBed({ seconds: Math.max(3, Math.ceil(durSec)), seed, mood }),
+      new Promise<Uint8Array>((_, reject) =>
+        window.setTimeout(() => reject(new Error("bed gen timeout")), 3500),
+      ),
+    ]);
+    if (Date.now() - started > 3500) return null;
+    const name = `bed_${clipIndex}.wav`;
+    await ff.writeFile(name, wav);
+    return name;
+  } catch (err) {
+    console.warn("[splitter] music bed generation skipped for clip", clipIndex, err);
+    return null;
+  }
+}
 
 const CORE_JS_URL = "/ffmpeg-core/ffmpeg-core.js";
 const WASM_MANIFEST_URL = "/ffmpeg-core/ffmpeg-core.wasm.asset.json";
@@ -289,6 +321,7 @@ async function encodeFastPolishedClipFromShort(
   inputClipName: string,
   clipName: string,
   durSec: number,
+  bedFile?: string | null,
 ) {
   const fadeOut = Math.max(durSec - 0.45, 0.1).toFixed(2);
   const tail = [
@@ -299,24 +332,21 @@ async function encodeFastPolishedClipFromShort(
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
   const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
-  const code = await ff.exec([
-    "-y",
-    "-i", inputClipName,
-    "-vf", vf,
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-tune", "zerolatency",
+  const voiceChain = `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`;
+  const args: string[] = ["-y", "-i", inputClipName];
+  if (bedFile) args.push("-i", bedFile);
+  args.push("-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
     "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
-    "-crf", "21",
-    "-pix_fmt", "yuv420p",
-    "-c:a", "aac",
-    "-b:a", "160k",
-    "-ac", "2",
-    "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
-    "-threads", "0",
-    clipName,
-  ]);
+    "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2");
+  if (bedFile) {
+    const bedChain = `[1:a]volume=0.26,highpass=f=60,lowpass=f=12000,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOut}:d=0.6[bed]`;
+    const filterComplex = `[0:a]${voiceChain}[voice];${bedChain};[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]`;
+    args.push("-filter_complex", filterComplex, "-map", "0:v", "-map", "[a]");
+  } else {
+    args.push("-af", voiceChain);
+  }
+  args.push("-movflags", "+faststart", "-threads", "0", clipName);
+  const code = await ff.exec(args);
   if (code !== 0) throw new Error(`fast polish exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -452,6 +482,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
         if (opts.polish && !skipFurtherPolish && remainingBudget > 18 && perClipBudget > 8) {
           let timeoutId = 0;
+          const wantsBed = (opts.musicBed ?? "auto") === "auto";
+          const bedFile = wantsBed
+            ? await buildBedForClip(ff, i + 1, `clip ${i + 1}`, w.start, dur)
+            : null;
           try {
             notify({
               index: i + 1, total,
@@ -460,10 +494,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               clipPercent: 0,
               etaSeconds: perClipBudget,
               elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-              message: `Speed-polishing clip ${i + 1} of ${total} from the short file (${perClipBudget}s cap)…`,
+              message: bedFile
+                ? `Polishing clip ${i + 1} of ${total} with a unique phonk bed (${perClipBudget}s cap)…`
+                : `Speed-polishing clip ${i + 1} of ${total} from the short file (${perClipBudget}s cap)…`,
             });
             await Promise.race([
-              encodeFastPolishedClipFromShort(ff, instantName, polishedName, dur),
+              encodeFastPolishedClipFromShort(ff, instantName, polishedName, dur, bedFile),
               new Promise<never>((_, reject) => {
                 const timeoutMs = perClipBudget * 1000;
                 timeoutId = window.setTimeout(() => {
@@ -473,7 +509,9 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               }),
             ]).finally(() => window.clearTimeout(timeoutId));
             mp4 = await readValidMp4(ff, polishedName, i + 1);
+            if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
           } catch (err) {
+            if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
             if (abortReason === "Cancelled by user") throw err;
             console.warn("[splitter] polish skipped; instant HD kept", err);
             skipFurtherPolish = true;
