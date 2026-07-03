@@ -164,13 +164,16 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   const { supabaseAdmin, userId, videoId } = args;
   const { data: video, error } = await supabaseAdmin
     .from("videos")
-    .select("id,user_id,title,description,tags,video_storage_path,thumbnail_storage_path,video_url")
+    .select("id,user_id,title,description,tags,video_storage_path,thumbnail_storage_path,video_url,duration_seconds")
     .eq("id", videoId)
     .eq("user_id", userId)
     .single();
 
   if (error || !video) throw new Error(error?.message || "Video not found");
   if (!video.video_storage_path && !video.video_url) throw new Error("No MP4 file is attached to this library item");
+  if (Number(video.duration_seconds || 0) > 60) {
+    throw new Error(`YouTube Shorts must be 60 seconds or less. This video is ${Math.round(Number(video.duration_seconds))}s.`);
+  }
 
   let bytes: ArrayBuffer;
   if (video.video_storage_path) {
