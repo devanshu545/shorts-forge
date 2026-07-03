@@ -55,18 +55,92 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("long_videos")
-      .update({ status: "queued" } as never)
+      .update({ status: "processing", error_message: null } as never)
       .eq("id", data.longVideoId)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
+    return { ok: true };
+  });
 
-    // Kick off GitHub Actions splitter worker immediately.
-    try {
-      const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
-      await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
-    } catch (err) {
-      console.warn("Splitter dispatch failed", err);
+// Register a clip produced by the browser splitter. The browser has already
+// uploaded the MP4 + thumbnail to Supabase Storage; this only inserts the row.
+export const registerSplitClip = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) =>
+    z.object({
+      longVideoId: z.string().uuid(),
+      videoStoragePath: z.string().min(1),
+      thumbnailStoragePath: z.string().min(1).nullable(),
+      title: z.string().min(1).max(100),
+      description: z.string().default(""),
+      tags: z.array(z.string()).default([]),
+      hashtags: z.array(z.string()).default([]),
+      startSeconds: z.number().nonnegative(),
+      endSeconds: z.number().positive(),
+      durationSeconds: z.number().positive(),
+      fileSizeBytes: z.number().int().positive(),
+    }).parse(raw),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const clipId = crypto.randomUUID();
+    const videoSigned = await supabaseAdmin.storage.from("videos").createSignedUrl(data.videoStoragePath, 60 * 60 * 24 * 30);
+    let thumbUrl: string | null = null;
+    if (data.thumbnailStoragePath) {
+      const t = await supabaseAdmin.storage.from("thumbnails").createSignedUrl(data.thumbnailStoragePath, 60 * 60 * 24 * 30);
+      thumbUrl = t.data?.signedUrl ?? null;
     }
+    const { error } = await supabaseAdmin.from("videos").insert({
+      id: clipId,
+      user_id: context.userId,
+      long_video_id: data.longVideoId,
+      title: data.title,
+      description: data.description,
+      tags: data.tags,
+      hashtags: data.hashtags,
+      status: "ready",
+      video_url: videoSigned.data?.signedUrl ?? null,
+      video_storage_path: data.videoStoragePath,
+      thumbnail_url: thumbUrl,
+      thumbnail_storage_path: data.thumbnailStoragePath,
+      duration_seconds: Math.round(data.durationSeconds),
+      file_size_bytes: data.fileSizeBytes,
+      clip_start_seconds: data.startSeconds,
+      clip_end_seconds: data.endSeconds,
+      generation_progress: 100,
+      generation_stage: "Split in your browser",
+    } as never);
+    if (error) throw new Error(error.message);
+
+    const { data: parent } = await supabaseAdmin
+      .from("long_videos").select("clips_generated").eq("id", data.longVideoId).maybeSingle();
+    const nextCount = ((parent?.clips_generated as number | undefined) ?? 0) + 1;
+    await supabaseAdmin.from("long_videos").update({ clips_generated: nextCount } as never).eq("id", data.longVideoId);
+
+    return { videoId: clipId, videoUrl: videoSigned.data?.signedUrl ?? null };
+  });
+
+export const finishSplitJob = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) =>
+    z.object({
+      longVideoId: z.string().uuid(),
+      status: z.enum(["ready", "failed"]),
+      durationSeconds: z.number().optional(),
+      errorMessage: z.string().optional(),
+    }).parse(raw),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const patch: Record<string, unknown> = { status: data.status };
+    if (data.durationSeconds) patch.duration_seconds = Math.round(data.durationSeconds);
+    if (data.errorMessage) patch.error_message = data.errorMessage.slice(0, 1000);
+    const { error } = await supabaseAdmin
+      .from("long_videos")
+      .update(patch as never)
+      .eq("id", data.longVideoId)
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
     return { ok: true };
   });
 
