@@ -21,7 +21,7 @@ export const createLongVideoUploadUrl = createServerFn({ method: "POST" })
 
     const { data: signed, error: signErr } = await supabaseAdmin.storage
       .from("videos")
-      .createSignedUploadUrl(path);
+      .createSignedUploadUrl(path, { upsert: true });
     if (signErr || !signed) throw new Error(signErr?.message || "Could not create upload URL");
 
     const { data: row, error: insErr } = await supabaseAdmin
@@ -85,8 +85,8 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     const videoPath = `${context.userId}/${clipId}/clip.mp4`;
     const thumbnailPath = `${context.userId}/${clipId}.jpg`;
     const [videoSigned, thumbSigned] = await Promise.all([
-      supabaseAdmin.storage.from("videos").createSignedUploadUrl(videoPath),
-      supabaseAdmin.storage.from("thumbnails").createSignedUploadUrl(thumbnailPath),
+      supabaseAdmin.storage.from("videos").createSignedUploadUrl(videoPath, { upsert: true }),
+      supabaseAdmin.storage.from("thumbnails").createSignedUploadUrl(thumbnailPath, { upsert: true }),
     ]);
     if (videoSigned.error || !videoSigned.data) throw new Error(videoSigned.error?.message || "Could not prepare clip upload");
     if (thumbSigned.error || !thumbSigned.data) throw new Error(thumbSigned.error?.message || "Could not prepare thumbnail upload");
@@ -97,6 +97,8 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
       thumbnailPath,
       videoSignedUrl: videoSigned.data.signedUrl,
       thumbnailSignedUrl: thumbSigned.data.signedUrl,
+      videoToken: videoSigned.data.token,
+      thumbnailToken: thumbSigned.data.token,
     };
   });
 
