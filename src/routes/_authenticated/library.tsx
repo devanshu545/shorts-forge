@@ -13,9 +13,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
+import { Checkbox } from "@/components/ui/checkbox";
 import { UploadToYouTubeDialog } from "@/components/UploadToYouTubeDialog";
+import { BulkPublishPanel, type BulkClip } from "@/components/BulkPublishPanel";
 import { generateMetadataForVideo, startVideoGeneration } from "@/lib/media.functions";
-import { Play, Trash2, Download, Copy, Upload, Library as LibraryIcon, Loader2, Search, Youtube, RefreshCw } from "lucide-react";
+import { Play, Trash2, Download, Copy, Upload, Library as LibraryIcon, Loader2, Search, Youtube, RefreshCw, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/library")({ component: LibraryPage });
