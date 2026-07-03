@@ -21,6 +21,7 @@ import {
   pickAutopilotTopic,
   getLatestAutopilotTestVideo,
   getAutopilotHealth,
+  triggerWorkflowNow,
 } from "@/lib/autopilot.functions";
 import {
   planCharacterShort,
@@ -62,6 +63,30 @@ function AutopilotPage() {
   const pickTopicFn = useServerFn(pickAutopilotTopic);
   const latestTestFn = useServerFn(getLatestAutopilotTestVideo);
   const healthFn = useServerFn(getAutopilotHealth);
+  const triggerFn = useServerFn(triggerWorkflowNow);
+
+  const [dispatching, setDispatching] = useState<null | "test" | "due">(null);
+  const dispatchWorkflow = async (mode: "test" | "due") => {
+    setDispatching(mode);
+    try {
+      const res = await triggerFn({ data: { forceTest: mode === "test" } });
+      if (res.ok) {
+        toast.success("GitHub workflow started", {
+          description: res.latestRunUrl ? "Opening the run…" : "Check GitHub Actions for progress.",
+          action: res.latestRunUrl
+            ? { label: "Open run", onClick: () => window.open(res.latestRunUrl!, "_blank") }
+            : { label: "Open Actions", onClick: () => window.open(res.runsUrl, "_blank") },
+        });
+      } else {
+        toast.error("Could not start workflow", { description: res.message });
+      }
+    } catch (err) {
+      toast.error("Trigger failed", { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDispatching(null);
+    }
+  };
+
 
   const planFn = useServerFn(planCharacterShort);
   const saveScriptFn = useServerFn(saveScriptAsDraft);
@@ -489,9 +514,16 @@ function AutopilotPage() {
               <Clock className="h-3.5 w-3.5" /> Next scheduled slots
             </div>
             {countdown && (
-              <div className="mt-2 rounded-xl border border-primary/30 bg-primary/10 p-3">
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
-                <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+              <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/10 p-3">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
+                  <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+                </div>
+                {countdown === "any moment now" && (
+                  <Button size="sm" onClick={() => dispatchWorkflow("due")} disabled={dispatching !== null}>
+                    {dispatching === "due" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />} Trigger now
+                  </Button>
+                )}
               </div>
             )}
             <div className="mt-2 flex flex-wrap gap-2">
@@ -550,8 +582,17 @@ function AutopilotPage() {
               </Button>
             </div>
             <div className="rounded-lg border border-border/60 bg-background/30 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium"><Youtube className="h-4 w-4 text-primary-glow" /> Step 2 — Run Workflow</div>
-              <p className="mt-1 text-xs text-muted-foreground">Upload the test short to YouTube.</p>
+              <div className="flex items-center gap-2 text-sm font-medium"><Youtube className="h-4 w-4 text-primary-glow" /> Step 2 — Run Workflow (GitHub)</div>
+              <p className="mt-1 text-xs text-muted-foreground">Triggers the GitHub Actions worker to upload the latest ready test short to YouTube — no manual GitHub click needed.</p>
+              <Button
+                className="mt-3 w-full"
+                variant="secondary"
+                onClick={() => dispatchWorkflow("test")}
+                disabled={dispatching !== null || !hasReadyTest}
+              >
+                {dispatching === "test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Youtube className="h-4 w-4" />}
+                {dispatching === "test" ? "Dispatching…" : "Run Workflow"}
+              </Button>
               {hasReadyTest ? (
                 <UploadToYouTubeDialog
                   video={testVideo}
@@ -561,20 +602,16 @@ function AutopilotPage() {
                     refetchLatest();
                   }}
                 >
-                  <Button className="mt-3 w-full" variant="secondary">
-                    <Youtube className="h-4 w-4" /> Run Workflow
+                  <Button className="mt-2 w-full" variant="ghost" size="sm">
+                    …or upload directly from the browser
                   </Button>
                 </UploadToYouTubeDialog>
               ) : (
-                <Button className="mt-3 w-full" variant="secondary" disabled>
-                  <Youtube className="h-4 w-4" /> Run Workflow
-                </Button>
-              )}
-              {!hasReadyTest && (
                 <p className="mt-2 text-xs text-muted-foreground">Generate a test video first.</p>
               )}
             </div>
           </div>
+
 
           {testStatus !== "idle" && (
             <div className="mt-5 rounded-lg border border-border/60 bg-background/40 p-4">

@@ -190,6 +190,54 @@ export type Database = {
         }
         Relationships: []
       }
+      long_videos: {
+        Row: {
+          clip_length: number
+          clips_generated: number
+          created_at: string
+          duration_seconds: number | null
+          error_message: string | null
+          id: string
+          max_clips: number
+          original_filename: string | null
+          size_bytes: number | null
+          source_path: string
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          clip_length?: number
+          clips_generated?: number
+          created_at?: string
+          duration_seconds?: number | null
+          error_message?: string | null
+          id?: string
+          max_clips?: number
+          original_filename?: string | null
+          size_bytes?: number | null
+          source_path: string
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          clip_length?: number
+          clips_generated?: number
+          created_at?: string
+          duration_seconds?: number | null
+          error_message?: string | null
+          id?: string
+          max_clips?: number
+          original_filename?: string | null
+          size_bytes?: number | null
+          source_path?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       notifications: {
         Row: {
           created_at: string
@@ -299,6 +347,8 @@ export type Database = {
         Row: {
           audio_url: string | null
           autopilot_slot: string | null
+          clip_end_seconds: number | null
+          clip_start_seconds: number | null
           created_at: string
           description: string | null
           duration_seconds: number | null
@@ -314,6 +364,7 @@ export type Database = {
           instagram_error: string | null
           instagram_media_id: string | null
           instagram_permalink: string | null
+          long_video_id: string | null
           metadata_options: Json
           scheduled_for: string | null
           script: Json | null
@@ -333,6 +384,8 @@ export type Database = {
         Insert: {
           audio_url?: string | null
           autopilot_slot?: string | null
+          clip_end_seconds?: number | null
+          clip_start_seconds?: number | null
           created_at?: string
           description?: string | null
           duration_seconds?: number | null
@@ -348,6 +401,7 @@ export type Database = {
           instagram_error?: string | null
           instagram_media_id?: string | null
           instagram_permalink?: string | null
+          long_video_id?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
@@ -367,6 +421,8 @@ export type Database = {
         Update: {
           audio_url?: string | null
           autopilot_slot?: string | null
+          clip_end_seconds?: number | null
+          clip_start_seconds?: number | null
           created_at?: string
           description?: string | null
           duration_seconds?: number | null
@@ -382,6 +438,7 @@ export type Database = {
           instagram_error?: string | null
           instagram_media_id?: string | null
           instagram_permalink?: string | null
+          long_video_id?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
           script?: Json | null
@@ -398,7 +455,15 @@ export type Database = {
           video_url?: string | null
           youtube_video_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "videos_long_video_id_fkey"
+            columns: ["long_video_id"]
+            isOneToOne: false
+            referencedRelation: "long_videos"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       youtube_connections: {
         Row: {
