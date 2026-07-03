@@ -642,7 +642,20 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
-      mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1, { inputName, startSec: w.start });
+      try {
+        mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1, { inputName, startSec: w.start });
+      } catch (err) {
+        if (abortReason === "Cancelled by user") throw err;
+        console.warn("[splitter] 720p vertical encode failed, retrying tiny safe encode", err);
+        activeAbort = false;
+        abortReason = null;
+        ff = await getFFmpeg();
+        await ff.writeFile(inputName, await fetchFile(file));
+        await encodeCompatibilityClip(ff, inputName, shortsName, w.start, dur, 360, 640, 10);
+        mp4 = await readValidMp4(ff, shortsName, i + 1);
+        const tinyMeta = await probeMp4Meta(mp4);
+        if (!isVerticalShortMeta(tinyMeta)) throw new Error(`Clip ${i + 1} could not be converted to vertical Shorts format.`);
+      }
 
       const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
