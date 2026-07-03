@@ -1,0 +1,33 @@
+name: ShortForge Splitter
+on:
+  workflow_dispatch:
+    inputs:
+      long_video_id:
+        description: "Long video ID to process (optional — leave empty to pull next queued)"
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - name: Run splitter
+        env:
+          AUTOPILOT_SECRET: ${{ secrets.AUTOPILOT_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          LONG_VIDEO_ID: ${{ inputs.long_video_id }}
+        run: node scripts/splitter-runner.mjs

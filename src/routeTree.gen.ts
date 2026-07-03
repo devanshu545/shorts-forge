@@ -21,6 +21,9 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedChannelRouteImport } from './routes/_authenticated/channel'
 import { Route as AuthenticatedAutopilotRouteImport } from './routes/_authenticated/autopilot'
 import { Route as ApiPublicYoutubeCallbackRouteImport } from './routes/api/public/youtube/callback'
+import { Route as ApiPublicSplitterTickRouteImport } from './routes/api/public/splitter/tick'
+import { Route as ApiPublicSplitterFinishRouteImport } from './routes/api/public/splitter/finish'
+import { Route as ApiPublicSplitterCompleteRouteImport } from './routes/api/public/splitter/complete'
 import { Route as ApiPublicSchedulerWorkerRouteImport } from './routes/api/public/scheduler/worker'
 import { Route as ApiPublicAutopilotUploadRouteImport } from './routes/api/public/autopilot/upload'
 import { Route as ApiPublicAutopilotTickRouteImport } from './routes/api/public/autopilot/tick'
@@ -87,6 +90,22 @@ const ApiPublicYoutubeCallbackRoute =
     path: '/api/public/youtube/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicSplitterTickRoute = ApiPublicSplitterTickRouteImport.update({
+  id: '/api/public/splitter/tick',
+  path: '/api/public/splitter/tick',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicSplitterFinishRoute = ApiPublicSplitterFinishRouteImport.update({
+  id: '/api/public/splitter/finish',
+  path: '/api/public/splitter/finish',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicSplitterCompleteRoute =
+  ApiPublicSplitterCompleteRouteImport.update({
+    id: '/api/public/splitter/complete',
+    path: '/api/public/splitter/complete',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicSchedulerWorkerRoute =
   ApiPublicSchedulerWorkerRouteImport.update({
     id: '/api/public/scheduler/worker',
@@ -133,6 +152,9 @@ export interface FileRoutesByFullPath {
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
+  '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
+  '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
+  '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRoutesByTo {
@@ -151,6 +173,9 @@ export interface FileRoutesByTo {
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
+  '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
+  '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
+  '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRoutesById {
@@ -171,6 +196,9 @@ export interface FileRoutesById {
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
   '/api/public/autopilot/upload': typeof ApiPublicAutopilotUploadRoute
   '/api/public/scheduler/worker': typeof ApiPublicSchedulerWorkerRoute
+  '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
+  '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
+  '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/youtube/callback': typeof ApiPublicYoutubeCallbackRoute
 }
 export interface FileRouteTypes {
@@ -191,6 +219,9 @@ export interface FileRouteTypes {
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
+    | '/api/public/splitter/complete'
+    | '/api/public/splitter/finish'
+    | '/api/public/splitter/tick'
     | '/api/public/youtube/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -209,6 +240,9 @@ export interface FileRouteTypes {
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
+    | '/api/public/splitter/complete'
+    | '/api/public/splitter/finish'
+    | '/api/public/splitter/tick'
     | '/api/public/youtube/callback'
   id:
     | '__root__'
@@ -228,6 +262,9 @@ export interface FileRouteTypes {
     | '/api/public/autopilot/tick'
     | '/api/public/autopilot/upload'
     | '/api/public/scheduler/worker'
+    | '/api/public/splitter/complete'
+    | '/api/public/splitter/finish'
+    | '/api/public/splitter/tick'
     | '/api/public/youtube/callback'
   fileRoutesById: FileRoutesById
 }
@@ -241,6 +278,9 @@ export interface RootRouteChildren {
   ApiPublicAutopilotTickRoute: typeof ApiPublicAutopilotTickRoute
   ApiPublicAutopilotUploadRoute: typeof ApiPublicAutopilotUploadRoute
   ApiPublicSchedulerWorkerRoute: typeof ApiPublicSchedulerWorkerRoute
+  ApiPublicSplitterCompleteRoute: typeof ApiPublicSplitterCompleteRoute
+  ApiPublicSplitterFinishRoute: typeof ApiPublicSplitterFinishRoute
+  ApiPublicSplitterTickRoute: typeof ApiPublicSplitterTickRoute
   ApiPublicYoutubeCallbackRoute: typeof ApiPublicYoutubeCallbackRoute
 }
 
@@ -330,6 +370,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicYoutubeCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/splitter/tick': {
+      id: '/api/public/splitter/tick'
+      path: '/api/public/splitter/tick'
+      fullPath: '/api/public/splitter/tick'
+      preLoaderRoute: typeof ApiPublicSplitterTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/splitter/finish': {
+      id: '/api/public/splitter/finish'
+      path: '/api/public/splitter/finish'
+      fullPath: '/api/public/splitter/finish'
+      preLoaderRoute: typeof ApiPublicSplitterFinishRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/splitter/complete': {
+      id: '/api/public/splitter/complete'
+      path: '/api/public/splitter/complete'
+      fullPath: '/api/public/splitter/complete'
+      preLoaderRoute: typeof ApiPublicSplitterCompleteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/scheduler/worker': {
       id: '/api/public/scheduler/worker'
       path: '/api/public/scheduler/worker'
@@ -401,6 +462,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicAutopilotTickRoute: ApiPublicAutopilotTickRoute,
   ApiPublicAutopilotUploadRoute: ApiPublicAutopilotUploadRoute,
   ApiPublicSchedulerWorkerRoute: ApiPublicSchedulerWorkerRoute,
+  ApiPublicSplitterCompleteRoute: ApiPublicSplitterCompleteRoute,
+  ApiPublicSplitterFinishRoute: ApiPublicSplitterFinishRoute,
+  ApiPublicSplitterTickRoute: ApiPublicSplitterTickRoute,
   ApiPublicYoutubeCallbackRoute: ApiPublicYoutubeCallbackRoute,
 }
 export const routeTree = rootRouteImport
