@@ -26,7 +26,9 @@ import {
 } from "@/lib/splitter.functions";
 import { OneClickPublishButton } from "@/components/OneClickPublishButton";
 import { ClipProgress } from "@/components/ClipProgress";
+import { BulkPublishPanel } from "@/components/BulkPublishPanel";
 import type { ClipProgress as ClipProgressData, ClipResult, SplitOptions } from "@/lib/ffmpeg-splitter.types";
+
 
 export const Route = createFileRoute("/_authenticated/split")({ component: SplitPage });
 
