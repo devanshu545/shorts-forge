@@ -93,12 +93,23 @@ function ensureShortsHashtag(title: string, description: string) {
   return { nextTitle: nextTitle.slice(0, 100), nextDesc: nextDesc.slice(0, 5000) };
 }
 
-export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer | Uint8Array, meta: UploadMeta) {
-  const file = asArrayBuffer(bytes);
+function normalizeShortsMeta(meta: UploadMeta) {
   const { nextTitle, nextDesc } = ensureShortsHashtag(meta.title, meta.description);
   const tagSet = new Set((meta.tags || []).map((t) => t.trim()).filter(Boolean));
   tagSet.add("Shorts");
   tagSet.add("shorts");
+  tagSet.add("youtube shorts");
+  return {
+    title: nextTitle,
+    description: nextDesc,
+    tags: Array.from(tagSet).slice(0, 30),
+    privacyStatus: meta.privacyStatus,
+  };
+}
+
+export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer | Uint8Array, meta: UploadMeta) {
+  const file = asArrayBuffer(bytes);
+  const shortsMeta = normalizeShortsMeta(meta);
   const initRes = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
     method: "POST",
     headers: {
@@ -109,9 +120,9 @@ export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer
     },
     body: JSON.stringify({
       snippet: {
-        title: nextTitle,
-        description: nextDesc,
-        tags: Array.from(tagSet).slice(0, 30),
+        title: shortsMeta.title,
+        description: shortsMeta.description,
+        tags: shortsMeta.tags,
         categoryId: "24",
       },
       status: { privacyStatus: meta.privacyStatus, selfDeclaredMadeForKids: false },
@@ -178,6 +189,7 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     tags: (args.tags?.length ? args.tags : (video.tags as string[] | null) || []).filter(Boolean).slice(0, 30),
     privacyStatus: args.privacyStatus ?? "public",
   };
+  const shortsMeta = normalizeShortsMeta(meta);
 
   const accessToken = await getFreshYouTubeAccessToken(supabaseAdmin, userId);
   const youtubeId = await uploadMp4ToYouTube(accessToken, bytes, meta);
@@ -186,9 +198,10 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   const { error: updErr } = await supabaseAdmin
     .from("videos")
     .update({
-      title: meta.title,
-      description: meta.description,
-      tags: meta.tags,
+      title: shortsMeta.title,
+      description: shortsMeta.description,
+      tags: shortsMeta.tags,
+      hashtags: ["#Shorts"],
       youtube_video_id: youtubeId,
       status: "published",
       uploaded_at: new Date().toISOString(),
