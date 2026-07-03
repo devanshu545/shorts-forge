@@ -16,8 +16,13 @@ export type ClipProgress = {
   percent: number;
   clipPercent: number;
   etaSeconds: number | null;
+  elapsedSeconds?: number;
   fps: number | null;
   uploadMBps: number | null;
+  uploadedBytes?: number;
+  totalBytes?: number;
+  lastLog?: string;
+  updatedAt?: number;
   message: string;
 };
 
@@ -31,6 +36,8 @@ export type SplitOptions = {
   // Default true — this is what stops shorts from looking like raw cuts.
   polish: boolean;
   onProgress: (p: ClipProgress) => void;
+  onClip?: (clip: ClipResult) => void;
+  maxProcessingSeconds?: number;
 };
 
 export type ClipResult = {

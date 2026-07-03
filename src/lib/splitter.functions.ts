@@ -62,6 +62,44 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const createClipUploadUrls = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) =>
+    z.object({
+      longVideoId: z.string().uuid(),
+      clipIndex: z.number().int().min(1).max(50),
+    }).parse(raw),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: parent, error: parentErr } = await supabaseAdmin
+      .from("long_videos")
+      .select("id,user_id")
+      .eq("id", data.longVideoId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (parentErr) throw new Error(parentErr.message);
+    if (!parent) throw new Error("Long video not found");
+
+    const clipId = crypto.randomUUID();
+    const videoPath = `${context.userId}/${clipId}/clip.mp4`;
+    const thumbnailPath = `${context.userId}/${clipId}.jpg`;
+    const [videoSigned, thumbSigned] = await Promise.all([
+      supabaseAdmin.storage.from("videos").createSignedUploadUrl(videoPath),
+      supabaseAdmin.storage.from("thumbnails").createSignedUploadUrl(thumbnailPath),
+    ]);
+    if (videoSigned.error || !videoSigned.data) throw new Error(videoSigned.error?.message || "Could not prepare clip upload");
+    if (thumbSigned.error || !thumbSigned.data) throw new Error(thumbSigned.error?.message || "Could not prepare thumbnail upload");
+
+    return {
+      clipId,
+      videoPath,
+      thumbnailPath,
+      videoSignedUrl: videoSigned.data.signedUrl,
+      thumbnailSignedUrl: thumbSigned.data.signedUrl,
+    };
+  });
+
 // Register a clip produced by the browser splitter. The browser has already
 // uploaded the MP4 + thumbnail to Supabase Storage; this only inserts the row.
 export const registerSplitClip = createServerFn({ method: "POST" })
@@ -69,6 +107,7 @@ export const registerSplitClip = createServerFn({ method: "POST" })
   .inputValidator((raw: unknown) =>
     z.object({
       longVideoId: z.string().uuid(),
+      clipId: z.string().uuid().optional(),
       videoStoragePath: z.string().min(1),
       thumbnailStoragePath: z.string().min(1).nullable(),
       title: z.string().min(1).max(100),
@@ -83,7 +122,7 @@ export const registerSplitClip = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const clipId = crypto.randomUUID();
+    const clipId = data.clipId ?? crypto.randomUUID();
     const videoSigned = await supabaseAdmin.storage.from("videos").createSignedUrl(data.videoStoragePath, 60 * 60 * 24 * 30);
     let thumbUrl: string | null = null;
     if (data.thumbnailStoragePath) {

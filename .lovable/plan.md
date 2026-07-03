@@ -1,64 +1,44 @@
-## Goal
-Upgrade Split → Shorts so clips feel premium (not "just a cut"), unblock 4K, and give each short an AI-crafted ≤40-char title based on real content.
+Plan to fix Long → Shorts performance and stuck-progress issues
 
-## 1. Kill the 4K stall — "Smart Upscale"
-Current flow tries real 4K in ffmpeg.wasm → 30+ min stalls.
+1. Stop blocking on source backup
+- Make source backup optional and off by default for Long → Shorts.
+- Start splitting from the local file immediately.
+- Do not upload the whole source video unless the user explicitly enables “Backup source”.
+- This removes the slow/stuck “Backing up source in background” path from the normal workflow.
 
-New flow when user picks 4K:
-- **Phase A (instant, ~30–60s)**: stream-copy the cut like Instant Mode → short is ready in library, playable immediately, tagged `quality: 1080p-source, upscale: pending`.
-- **Phase B (background, ~3–6 min)**: kick a re-encode job that:
-  - Runs a `lanczos` upscale + light sharpen + film-grain in ffmpeg.wasm at 2160×3840, `preset=ultrafast`, `crf=23`, 12 Mbps cap (small enough to finish).
-  - Streams progress into the same clip card (badge: "Upscaling to 4K… 42%").
-  - On finish, swaps the storage file, flips badge to "4K Ready".
-  - On failure, keeps 1080p and shows "4K unavailable — kept HD" instead of the current hard error.
-- Add a manual "Retry 4K" button per clip.
-- Concurrency = 1 upscale at a time (queue), so the tab doesn't freeze.
+2. Replace “polish by full re-encode” with a fast quality ladder
+- Default mode: “Instant HD” using stream-copy cuts. This preserves original video quality and finishes in seconds because it does not re-render pixels.
+- New mode: “Fast Polish” for one selected clip at a time, capped by a 5-minute time budget.
+- If polish cannot finish inside the budget, automatically keep the instant high-quality clip instead of freezing for an hour.
+- Remove any claim that browser 4K re-encode can always finish in seconds; that is physically limited by the user’s device CPU/browser.
 
-## 2. Make shorts stop looking cheap — auto-polish pass
-Every generated clip runs through a polish step before it's saved:
+3. Rework Smart 4K so it does not stall the app
+- Stop running 4K upscale automatically for every generated clip.
+- Generate clips normally first, then show a separate “Upgrade this clip” button.
+- Use a timeout, ETA, cancel/fallback state, and “HD ready / 4K processing / 4K failed” badges.
+- If 4K cannot complete under the time budget, keep the HD clip available and clearly show why it fell back.
 
-- **Background music**: pick one royalty-free track per genre (upbeat / emotional / suspense / chill) from `assets/music/`. Duck it to −18 dB under the original audio using ffmpeg `sidechaincompress`. If no music files present yet, generate 4 loops via ElevenLabs Music API once and cache under `assets/music/`.
-- **Hook text (first 2s)**: AI-generated 3–5 word hook drawn as bold white text with black stroke, animated pop-in (scale 0.8→1). Rendered via ffmpeg `drawtext` with a bundled Inter-Black TTF.
-- **Zoom/pan motion**: subtle Ken Burns (`zoompan`, 1.0→1.08 over clip length) so static-feeling shots breathe.
-- **Intro/outro branding**: 0.4s black-flash intro + 0.6s outro card ("More on @channel") built as a ffmpeg overlay.
-- All polish runs in the same ffmpeg pass as the cut → one encode, not three.
+4. Speed up clip uploads
+- Upload video and thumbnail in parallel.
+- Upload clips as soon as each clip finishes instead of waiting for all clips to render.
+- Use signed upload URLs for clip files too, so upload progress can show real bytes/MB/s for every clip.
+- Add retry with backoff for temporary HTTP errors.
+- Register the clip in the database only after the storage upload succeeds, so broken clips do not appear as ready.
 
-## 3. AI-generated titles based on actual content (≤40 chars)
-Right now SEO only sees filename + timestamps. Fix:
+5. Add “not stuck” progress details
+- Add elapsed time, ETA, current phase, current clip, processed MB, upload speed, last progress time, and ffmpeg log tail.
+- Detect no-progress for a fixed window and show “slow but alive” vs “stalled”.
+- Add cancel/stop handling so the user is never trapped waiting.
 
-- **Frame sampling**: after cut, use browser `<video>`+`<canvas>` to grab 4 frames (10 %, 35 %, 60 %, 85 %). Encode as small JPEGs (≤200 KB each).
-- **Audio transcript**: extract clip audio to 16 kHz mono WAV via ffmpeg, send to `openai/gpt-4o-mini-transcribe` through Lovable AI Gateway.
-- **Title generation**: send frames (as `image_url` blocks) + transcript + segment timing to `google/gemini-2.5-flash` with a prompt that enforces:
-  - ≤ 40 characters (validated + hard-truncated in code)
-  - 1 emoji max
-  - No clickbait quotes
-  - Hook-first phrasing
-- Description + tags reuse the same context so they match the title.
-- Fallback: if transcript empty (silent clip) → frames-only; if vision fails → filename hint. Never block publish.
+6. Reduce AI credit usage
+- Do not call AI during splitting.
+- Generate AI title/description/tags only when the user clicks publish or explicitly clicks “Generate SEO”.
+- Keep the current frame-based title generation, but call it once per clip and cache the result.
 
-## 4. UI updates in `/split`
-- Resolution picker: "Instant HD" (default) · "4K Smart Upscale" (with "~5 min in background" hint).
-- Per-clip card shows: quality badge, upscale progress bar, "Retry 4K" button, live AI-generated title (editable inline before publish).
-- Music genre selector (auto / upbeat / emotional / suspense / chill).
-- Toggle: "Add hook + branding" (on by default).
+7. Test path before calling it fixed
+- Test one short generation locally with Instant HD and verify it creates a playable MP4 quickly.
+- Test upload progress and retry behavior with one generated clip.
+- Test Fast Polish with the 5-minute budget and verify it either finishes or cleanly falls back without freezing.
 
-## 5. Files touched
-- `src/lib/ffmpeg-splitter.client.ts` — polish pass, smart-upscale phase A/B queue, frame sampler, audio extractor.
-- `src/lib/seo.functions.ts` — accept `frames[]` + `transcript`, enforce ≤40 chars.
-- New `src/lib/transcribe.functions.ts` — server fn wrapping `gpt-4o-mini-transcribe`.
-- New `src/lib/music-library.ts` + one-time ElevenLabs music seeding script → files under `assets/music/`.
-- `src/routes/_authenticated/split.tsx` — new UI, upscale progress, editable title.
-- `src/components/OneClickPublishButton.tsx` — pass frames + transcript hint through.
-- Bundle Inter-Black TTF under `public/fonts/` for `drawtext`.
-
-## Technical notes
-- All heavy work stays in the browser tab (no server credit burn for encode/upscale).
-- Only AI calls (transcribe + title + one-time music seed) touch Lovable credits — ~$0.002 per short.
-- Upscale uses `-vf scale=2160:3840:flags=lanczos,unsharp=5:5:0.8` — visually crisp without slow AI models.
-- All ffmpeg filters chained in a single `-filter_complex` graph so we don't multiply encode time.
-- Hook text + music + branding fully skippable if user toggles off.
-
-## What you get
-- Click "Create Instant Shorts" → clips appear in ~1 min with music, hook text, motion, branding, and a real AI title like "😳 He didn't see this coming".
-- 4K toggle → same clips appear instantly at HD, upgrade to true 4K in the background without freezing the tab.
-- Titles ≤ 40 chars, grounded in what's actually on screen and being said.
+Important expectation
+- True 4K cinematic re-rendering in seconds inside a browser is not realistically guaranteed on every laptop without quality/time tradeoffs. The reliable sub-5-minute fix is: instant original-quality shorts first, optional bounded polish/4K upgrade second, with no frozen progress and no wasted AI calls.
