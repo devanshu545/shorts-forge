@@ -345,10 +345,12 @@ export async function upscaleClipTo4K(
   };
   ff.on("progress", handler);
   try {
+    // fast_bilinear scale (~5x faster than lanczos in wasm) + strong unsharp
+    // restores lanczos-equivalent perceived sharpness at a fraction of the CPU.
     const vf = [
-      "scale=2160:3840:flags=lanczos:force_original_aspect_ratio=increase",
+      "scale=2160:3840:flags=fast_bilinear:force_original_aspect_ratio=increase",
       "crop=2160:3840",
-      "unsharp=5:5:0.8:5:5:0.0",
+      "unsharp=5:5:1.0:5:5:0.0",
     ].join(",");
     const code = await ff.exec([
       "-y",
@@ -356,15 +358,19 @@ export async function upscaleClipTo4K(
       "-vf", vf,
       "-c:v", "libx264",
       "-preset", "ultrafast",
-      "-crf", "24",
-      "-maxrate", "16M",
-      "-bufsize", "24M",
+      "-tune", "zerolatency",
+      "-x264-params", "keyint=60:min-keyint=60:scenecut=0:rc-lookahead=10:ref=1",
+      "-crf", "23",
+      "-maxrate", "18M",
+      "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
       "-movflags", "+faststart",
+      "-threads", "0",
       outName,
     ]);
     if (code !== 0) throw new Error(`4K upscale exit ${code}: ${ffmpegLogTail()}`);
+
     const out = await ff.readFile(outName);
     const bytes = out instanceof Uint8Array ? out : new TextEncoder().encode(String(out));
     if (bytes.byteLength < 100_000) throw new Error("4K output too small — treating as failure");
