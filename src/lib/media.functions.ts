@@ -59,6 +59,17 @@ const UploadYouTubeInput = z.object({
   privacyStatus: z.enum(["public", "unlisted", "private"]).default("private"),
 });
 
+const ShortsSafeUploadInput = z.object({
+  videoId: z.string().uuid(),
+});
+
+const CommitShortsSafeInput = z.object({
+  videoId: z.string().uuid(),
+  videoStoragePath: z.string().min(1),
+  fileSizeBytes: z.number().int().positive(),
+  durationSeconds: z.number().positive().max(60.5),
+});
+
 function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : text;
@@ -558,4 +569,61 @@ export const uploadVideoToYouTube = createServerFn({ method: "POST" })
       tags: data.tags,
       privacyStatus: data.privacyStatus,
     });
+  });
+
+export const createShortsSafeVideoUploadUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => ShortsSafeUploadInput.parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: video, error } = await supabaseAdmin
+      .from("videos")
+      .select("id,user_id,video_storage_path,video_url")
+      .eq("id", data.videoId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!video?.video_storage_path && !video?.video_url) throw new Error("No MP4 file is attached to this library item");
+
+    const targetPath = video.video_storage_path || `${context.userId}/${data.videoId}/shorts-safe.mp4`;
+    const sourceUrl = video.video_storage_path
+      ? await supabaseAdmin.storage.from("videos").createSignedUrl(video.video_storage_path, 60 * 60 * 2)
+      : { data: { signedUrl: video.video_url as string }, error: null };
+    if (sourceUrl.error || !sourceUrl.data?.signedUrl) {
+      throw new Error(sourceUrl.error?.message || "Could not prepare the video for Shorts conversion");
+    }
+
+    const upload = await supabaseAdmin.storage.from("videos").createSignedUploadUrl(targetPath, { upsert: true });
+    if (upload.error || !upload.data?.signedUrl) throw new Error(upload.error?.message || "Could not prepare Shorts upload URL");
+
+    return {
+      sourceUrl: sourceUrl.data.signedUrl,
+      uploadSignedUrl: upload.data.signedUrl,
+      videoStoragePath: targetPath,
+    };
+  });
+
+export const commitShortsSafeVideo = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => CommitShortsSafeInput.parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const signed = await supabaseAdmin.storage.from("videos").createSignedUrl(data.videoStoragePath, 60 * 60 * 24 * 30);
+    if (signed.error || !signed.data?.signedUrl) throw new Error(signed.error?.message || "Could not sign Shorts-safe MP4");
+
+    const { error } = await supabaseAdmin
+      .from("videos")
+      .update({
+        video_url: signed.data.signedUrl,
+        video_storage_path: data.videoStoragePath,
+        file_size_bytes: data.fileSizeBytes,
+        duration_seconds: Math.round(data.durationSeconds),
+        generation_progress: 100,
+        generation_stage: "Shorts-safe vertical MP4 ready",
+        error_message: null,
+      } as never)
+      .eq("id", data.videoId)
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return { ok: true, videoUrl: signed.data.signedUrl };
   });

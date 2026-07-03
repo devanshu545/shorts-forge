@@ -1,6 +1,6 @@
 // Splitter runner — polls /api/public/splitter/tick for the next queued long
 // video, downloads it, uses ffmpeg scene detection to pick the best moments,
-// crops each to 1080x1920 (safe center-crop) and POSTs each clip back to
+// renders each to centered 9:16 with a blurred moving background and POSTs each clip back to
 // /api/public/splitter/complete. When done, calls /finish to mark the job.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -34,6 +34,14 @@ function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe" });
   if (r.status !== 0) throw new Error(`${cmd} ${args.slice(0,3).join(" ")} failed: ${(r.stderr || r.stdout).slice(-800)}`);
   return r.stdout;
+}
+function verticalBlurFilter(w, h, blur = 24) {
+  return [
+    "split=2[bg][fg]",
+    `[bg]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},boxblur=${blur}:1[bg2]`,
+    `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[fg2]`,
+    "[bg2][fg2]overlay=(W-w)/2:(H-h)/2:format=auto",
+  ].join(";");
 }
 function probeDuration(p) {
   const s = run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", p]).trim();
@@ -147,8 +155,7 @@ async function processUpscaleJob(job) {
   await reportUpscaleProgress(job.clipId, 42, "Native 4K render started");
 
   const vf = [
-    "scale=2160:3840:force_original_aspect_ratio=increase:flags=lanczos",
-    "crop=2160:3840",
+    verticalBlurFilter(2160, 3840, 28),
     "eq=saturation=1.08:contrast=1.035:brightness=0.005",
     "unsharp=5:5:0.85:5:5:0.0",
   ].join(",");
@@ -206,7 +213,7 @@ async function processJob(job) {
     console.log(`  · clip ${idx}: ${w.start.toFixed(1)} → ${w.end.toFixed(1)} (${clipDur}s)`);
     run("ffmpeg", [
       "-y", "-ss", String(w.start), "-i", src, "-t", clipDur,
-      "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30",
+      "-vf", `${verticalBlurFilter(1080, 1920)},fps=30`,
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out,
     ]);

@@ -10,7 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, UploadCloud, Youtube } from "lucide-react";
 import { toast } from "sonner";
-import { uploadVideoToYouTube } from "@/lib/media.functions";
+import { commitShortsSafeVideo, createShortsSafeVideoUploadUrl, uploadVideoToYouTube } from "@/lib/media.functions";
 
 type UploadVideo = {
   id: string;
@@ -25,6 +25,8 @@ type UploadVideo = {
 
 export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: UploadVideo; children?: React.ReactNode; onUploaded?: () => void }) {
   const upload = useServerFn(uploadVideoToYouTube);
+  const createSafeUpload = useServerFn(createShortsSafeVideoUploadUrl);
+  const commitSafeUpload = useServerFn(commitShortsSafeVideo);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(video.title || "Untitled Short");
   const [description, setDescription] = useState(video.description || "");
@@ -32,24 +34,41 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [privacy, setPrivacy] = useState<"public" | "unlisted" | "private">("private");
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
-  const [url, setUrl] = useState<string | null>(video.youtube_video_id ? `https://www.youtube.com/watch?v=${video.youtube_video_id}` : null);
+  const [url, setUrl] = useState<string | null>(video.youtube_video_id ? `https://www.youtube.com/shorts/${video.youtube_video_id}` : null);
   const [uploading, setUploading] = useState(false);
 
   const run = async () => {
     setUploading(true);
-    setProgress(15);
-    setStatus("Uploading to YouTube... 15%");
+    setProgress(8);
+    setStatus("Checking vertical Shorts format...");
     const ticker = window.setInterval(() => {
       setProgress((p) => {
-        const next = Math.min(92, p + 7);
-        setStatus(`Uploading to YouTube... ${next}%`);
+        const next = Math.min(92, p + 5);
+        setStatus(next < 45 ? "Preparing 9:16 Shorts MP4..." : `Uploading to YouTube... ${next}%`);
         return next;
       });
     }, 900);
     try {
+      const safeInfo = await createSafeUpload({ data: { videoId: video.id } });
+      const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await import("@/lib/shorts-safe.client");
+      const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
+      const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
+      if (safe.changed) {
+        setProgress(48);
+        setStatus("Saving vertical 9:16 Shorts MP4...");
+        await uploadSignedMp4(safeInfo.uploadSignedUrl, safe.bytes);
+        await commitSafeUpload({ data: {
+          videoId: video.id,
+          videoStoragePath: safeInfo.videoStoragePath,
+          fileSizeBytes: safe.bytes.byteLength,
+          durationSeconds: safe.durationSeconds,
+        } });
+      }
+      setProgress(60);
+      setStatus("Uploading to YouTube as a Short...");
       const result = await upload({ data: { videoId: video.id, title, description, tags: tags.split(",").map((t) => t.trim()).filter(Boolean), privacyStatus: privacy } });
       setProgress(100);
-      setStatus("✅ Uploaded to YouTube!");
+      setStatus("✅ Uploaded to YouTube as a Shorts-ready vertical MP4!");
       setUrl(result.url);
       toast.success("Uploaded to YouTube");
       onUploaded?.();

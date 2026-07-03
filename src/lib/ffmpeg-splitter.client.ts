@@ -92,6 +92,35 @@ function verticalCenterGraph(w: number, h: number, blur = 22): string {
   ].join(";");
 }
 
+async function probeMp4Meta(mp4: Uint8Array): Promise<{ width: number; height: number; duration: number }> {
+  const blob = new Blob([mp4.slice().buffer as ArrayBuffer], { type: "video/mp4" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = url;
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("Could not read generated MP4 metadata"));
+      setTimeout(() => (video.videoWidth ? resolve() : reject(new Error("Timed out reading generated MP4 metadata"))), 8000);
+    });
+    return {
+      width: video.videoWidth,
+      height: video.videoHeight,
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function isVerticalShortMeta(meta: { width: number; height: number; duration: number }) {
+  const ratio = meta.width / Math.max(meta.height, 1);
+  return meta.height > meta.width && Math.abs(ratio - 9 / 16) < 0.015 && meta.duration <= 60.5;
+}
+
 function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
   const fadeOutStart = Math.max(clipDurationSec - 0.5, 0.1).toFixed(2);
   const tail = [
@@ -280,6 +309,50 @@ async function encodeCompatibilityClip(
   if (code !== 0) throw new Error(`compat encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
+async function encodeShortsSafeClipFromBytes(
+  ff: FFmpeg,
+  mp4: Uint8Array,
+  clipName: string,
+  durSec: number,
+) {
+  const inName = `${clipName.replace(/\.mp4$/i, "")}_in.mp4`;
+  await ff.writeFile(inName, new Uint8Array(mp4));
+  try {
+    const code = await ff.exec([
+      "-y",
+      "-i", inName,
+      "-t", Math.min(durSec, 60).toFixed(2),
+      "-vf", verticalCenterGraph(1080, 1920),
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-tune", "zerolatency",
+      "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
+      "-crf", "21",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-b:a", "160k",
+      "-ac", "2",
+      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+      "-threads", "0",
+      clipName,
+    ]);
+    if (code !== 0) throw new Error(`shorts-safe encode exit ${code}: ${ffmpegLogTail()}`);
+  } finally {
+    try { await ff.deleteFile(inName); } catch { /* noop */ }
+  }
+}
+
+async function ensureVerticalShortMp4(ff: FFmpeg, mp4: Uint8Array, clipName: string, durSec: number, clipIndex: number) {
+  const meta = await probeMp4Meta(mp4).catch(() => null);
+  if (meta?.duration && meta.duration > 60.5) throw new Error(`Clip ${clipIndex} is ${Math.round(meta.duration)}s; YouTube Shorts must be 60s or less.`);
+  if (meta && isVerticalShortMeta(meta)) return mp4;
+  await encodeShortsSafeClipFromBytes(ff, mp4, clipName, durSec);
+  const safe = await readValidMp4(ff, clipName, clipIndex);
+  const safeMeta = await probeMp4Meta(safe);
+  if (!isVerticalShortMeta(safeMeta)) throw new Error(`Clip ${clipIndex} is still not vertical 9:16 after conversion; upload stopped.`);
+  return safe;
+}
+
 // Fast enhancement pass. The important speed trick is that this runs from an
 // already-cut short clip, not the full source file. Re-encoding a 30-60s local
 // short is dramatically faster and gives us a safe fallback: the instant clip
@@ -417,6 +490,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const dur = w.end - w.start;
       const instantName = `clip${i + 1}_instant.mp4`;
       const polishedName = `clip${i + 1}_polished.mp4`;
+      const shortsName = `clip${i + 1}_shorts_safe.mp4`;
       let mp4: Uint8Array | null = null;
       const elapsed = (Date.now() - startedAt) / 1000;
       const remainingBudget = hardBudgetSec - elapsed;
@@ -526,6 +600,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
+      mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1);
 
       const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
@@ -542,6 +617,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
       try { await ff.deleteFile(instantName); } catch { /* noop */ }
       try { await ff.deleteFile(polishedName); } catch { /* noop */ }
+      try { await ff.deleteFile(shortsName); } catch { /* noop */ }
     }
   } finally {
     ff.off("progress", onProgress);
@@ -587,8 +663,7 @@ export async function upscaleClipTo4K(
     // fast_bilinear scale (~5x faster than lanczos in wasm) + strong unsharp
     // restores lanczos-equivalent perceived sharpness at a fraction of the CPU.
     const vf = [
-      "scale=2160:3840:flags=fast_bilinear:force_original_aspect_ratio=increase",
-      "crop=2160:3840",
+      verticalCenterGraph(2160, 3840),
       "unsharp=5:5:1.0:5:5:0.0",
     ].join(",");
     const code = await ff.exec([

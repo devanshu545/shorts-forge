@@ -1,55 +1,29 @@
-## Goal
-
-Make shorts appear quickly, avoid stuck progress, and move cinematic polish / 4K enhancement into a bounded, visible workflow that finishes in minutes when possible and never blocks the user indefinitely.
-
-## Reality constraint
-
-A true no-compromise 4K cinematic re-render in seconds cannot be guaranteed inside every browser tab, especially on slower devices. The reliable way to make this fast is to deliver an original-quality clip immediately, then run enhancement as a capped upgrade job with fallback and clear ETA instead of freezing for an hour.
-
 ## Plan
 
-1. **Instant clip first**
-  - Always generate the first usable short via stream-copy cut first.
-  - This preserves original video/audio quality and should complete far faster than full re-encoding.
-  - Show the clip in the library immediately before any polish or 4K work starts.
-2. **Make Cinematic Polish a fast enhancement pass**
-  - Replace the slow “full cinematic” pipeline with a tiered polish ladder:
-    - **Speed Polish:** color, contrast, sharpness, fades, audio leveling, fast encode.
-    - **Premium Polish:** stronger effects only if the device/time budget allows.
-    - **Fallback:** keep the instant original-quality clip if polish exceeds the time budget.
-  - Add a hard per-clip timeout so polish cannot run for an hour.
-3. **Add enhancement system for “shock me” shorts**
-  - Add fast visual enhancement: saturation/contrast tuning, sharpen, vignette/light fade, smoother intro/outro.
-  - Add audio enhancement: normalize loudness, fade in/out, preserve source audio when re-encoding would slow too much.
-  - Add optional background song support as a separate enhancement stage only when an audio/music asset is available, so it does not block video generation.
-4. **Rework 4K upgrade**
-  - 4K will run only after the HD short is already ready.
-  - Show a separate 4K progress state with elapsed time, ETA, current phase, last progress event, and cancel/fallback.
-  - If 4K exceeds the time budget, keep the HD polished clip instead of failing or freezing.
-  - Use faster upscale settings first, then only attempt heavier quality settings when the remaining budget allows.
-5. **Prevent stuck states**
-  - Add stall detection for polish, 4K, and upload.
-  - If no progress arrives within a threshold, show exactly what is happening and automatically move to fallback/retry.
-  - Progress bar will include phase, clip number, elapsed time, ETA, last movement, upload speed, and latest processing log.
-6. **Speed up uploads**
-  - Upload each finished clip immediately instead of waiting for all processing.
-  - Upload thumbnail and video in parallel.
-  - Add retry/backoff and visible upload MB/s.
-  - Avoid uploading source backup unless explicitly enabled.
-7. **Reduce wasted credits**
-  - Do not call AI/SEO/music generation automatically during splitting.
-  - Only generate titles/music/SEO when the user clicks the related action or when a final clip is ready.
-8. **Validation**
-  - Test the local generation path in the browser with a small sample.
-  - Confirm instant clip output appears quickly.
-  - Confirm polish and 4K show ETA and either complete or safely fallback before the 5-minute cap.
+1. **Make Shorts format non-optional before upload**
+   - Add a server-side “Shorts-safe MP4” preparation step in the YouTube upload flow.
+   - Before sending to YouTube, inspect the MP4 dimensions/duration.
+   - If it is not exactly vertical 9:16, repackage it into a vertical 1080x1920 canvas with the original video centered and a blurred moving copy behind it.
+   - This guarantees YouTube receives a vertical Short-style file, not a landscape video file.
 
-## Expected result
+2. **Fix the fast splitter fallback that can still create landscape clips**
+   - The current fast stream-copy path preserves original resolution, so if the source is landscape it can upload as landscape even though the UI preview is 9:16.
+   - Keep the fast path, but add a validation guard: any generated split clip that is not vertical gets converted once into the centered vertical blur layout.
+   - Keep the existing cinematic polish and 4K features working as-is.
 
-The app will prioritize “usable short in minutes” over waiting for a slow full render. Cinematic polish and 4K will become bounded upgrades with visible progress, not hour-long blocking operations.
+3. **Fix 4K upgrade output to stay Shorts-safe**
+   - Update the 4K worker/upscale paths so they use the same centered vertical blur composition instead of simple crop-only scaling.
+   - This avoids cutting the subject off and keeps upgraded files in 2160x3840 vertical format.
 
-&nbsp;
+4. **Strengthen YouTube Shorts metadata**
+   - Keep auto-appending `#Shorts` to title/description and Shorts tags.
+   - Store the actually-uploaded metadata back to the library so the app reflects what YouTube received.
+   - Add upload-stage checks so normal upload, one-click publish, and bulk publish all use the same Shorts-safe path.
 
-&nbsp;
+5. **Add clear safety errors instead of silent bad uploads**
+   - If a clip is over 60 seconds, stop upload with a clear message.
+   - If format preparation fails, stop instead of uploading a landscape/regular video.
 
-Also there are getting error generating shorts now fix that also and you can 2 3 hours but i need fast genaration with no error and  properly excutes shorts test every corner of web and then give me output take lovable time for working it's 🆗 
+6. **Verify without breaking existing workflow**
+   - Check the splitter, library upload dialog, one-click publish, and bulk publish all still call the same upload function.
+   - Confirm generated clips remain selectable and bulk-uploadable from both Long → Shorts and Library.
