@@ -435,7 +435,9 @@ export async function upscaleClipTo4K(
   const ff = await getFFmpeg();
   const inName = `up_in_${Date.now()}.mp4`;
   const outName = `up_out_${Date.now()}.mp4`;
-  await ff.writeFile(inName, mp4);
+  // ffmpeg.wasm may detach/transfers the supplied ArrayBuffer. Always write a
+  // copy so the caller's local clip bytes remain usable for preview/retry.
+  await ff.writeFile(inName, new Uint8Array(mp4));
   const startedAt = Date.now();
 
   const handler = ({ progress }: { progress: number }) => {
