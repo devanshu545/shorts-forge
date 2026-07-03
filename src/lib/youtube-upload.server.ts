@@ -19,6 +19,15 @@ type UploadExistingVideoArgs = {
   privacyStatus?: YouTubePrivacy;
 };
 
+type ShortsInspection = {
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  isVertical: boolean;
+  isDurationOk: boolean;
+  details: string;
+};
+
 function asArrayBuffer(bytes: ArrayBuffer | Uint8Array): ArrayBuffer {
   if (bytes instanceof ArrayBuffer) return bytes;
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -30,6 +39,123 @@ function googleError(body: string) {
     return parsed.error?.message || JSON.stringify(parsed.error || parsed).slice(0, 600);
   } catch {
     return body.slice(0, 600);
+  }
+}
+
+function readU64(view: DataView, offset: number) {
+  return Number(view.getBigUint64(offset));
+}
+
+function parseMp4Boxes(view: DataView, start: number, end: number, onBox: (type: string, payloadStart: number, payloadEnd: number) => void) {
+  let offset = start;
+  while (offset + 8 <= end) {
+    const size32 = view.getUint32(offset);
+    const type = String.fromCharCode(
+      view.getUint8(offset + 4),
+      view.getUint8(offset + 5),
+      view.getUint8(offset + 6),
+      view.getUint8(offset + 7),
+    );
+    let size = size32;
+    let header = 8;
+    if (size32 === 1 && offset + 16 <= end) {
+      size = readU64(view, offset + 8);
+      header = 16;
+    } else if (size32 === 0) {
+      size = end - offset;
+    }
+    if (size < header || offset + size > end) break;
+    onBox(type, offset + header, offset + size);
+    offset += size;
+  }
+}
+
+function parseTkhd(view: DataView, start: number, end: number) {
+  if (end - start < 84) return null;
+  const version = view.getUint8(start);
+  const matrixStart = start + (version === 1 ? 48 : 36);
+  if (matrixStart + 44 > end) return null;
+  const rawWidth = view.getUint32(end - 8) / 65536;
+  const rawHeight = view.getUint32(end - 4) / 65536;
+  const a = view.getInt32(matrixStart);
+  const b = view.getInt32(matrixStart + 4);
+  const c = view.getInt32(matrixStart + 12);
+  const d = view.getInt32(matrixStart + 16);
+  const rotated = Math.abs(b) > Math.abs(a) && Math.abs(c) > Math.abs(d);
+  const width = Math.round(rotated ? rawHeight : rawWidth);
+  const height = Math.round(rotated ? rawWidth : rawHeight);
+  if (!width || !height) return null;
+  return { width, height };
+}
+
+function parseMvhdDuration(view: DataView, start: number, end: number) {
+  if (end - start < 24) return null;
+  const version = view.getUint8(start);
+  const timeScaleOffset = start + (version === 1 ? 20 : 12);
+  const durationOffset = start + (version === 1 ? 24 : 16);
+  if (durationOffset + (version === 1 ? 8 : 4) > end) return null;
+  const timeScale = view.getUint32(timeScaleOffset);
+  const duration = version === 1 ? readU64(view, durationOffset) : view.getUint32(durationOffset);
+  if (!timeScale || !duration) return null;
+  return duration / timeScale;
+}
+
+function inspectMp4ForShorts(bytes: ArrayBuffer | Uint8Array, storedDurationSeconds?: number | null): ShortsInspection {
+  const file = asArrayBuffer(bytes);
+  const view = new DataView(file);
+  let width: number | null = null;
+  let height: number | null = null;
+  let durationSeconds: number | null = storedDurationSeconds && storedDurationSeconds > 0 ? storedDurationSeconds : null;
+
+  parseMp4Boxes(view, 0, view.byteLength, (type, payloadStart, payloadEnd) => {
+    if (type !== "moov") return;
+    parseMp4Boxes(view, payloadStart, payloadEnd, (moovType, moovStart, moovEnd) => {
+      if (moovType === "mvhd") durationSeconds = durationSeconds ?? parseMvhdDuration(view, moovStart, moovEnd);
+      if (moovType !== "trak") return;
+      const trackSizes: Array<{ width: number; height: number }> = [];
+      let isVideoTrack = false;
+      parseMp4Boxes(view, moovStart, moovEnd, (trakType, trakStart, trakEnd) => {
+        if (trakType === "tkhd") {
+          const parsed = parseTkhd(view, trakStart, trakEnd);
+          if (parsed) trackSizes.push(parsed);
+        }
+        if (trakType === "mdia") {
+          parseMp4Boxes(view, trakStart, trakEnd, (mdiaType, mdiaStart) => {
+            if (mdiaType !== "hdlr" || mdiaStart + 12 > trakEnd) return;
+            const handler = String.fromCharCode(
+              view.getUint8(mdiaStart + 8),
+              view.getUint8(mdiaStart + 9),
+              view.getUint8(mdiaStart + 10),
+              view.getUint8(mdiaStart + 11),
+            );
+            if (handler === "vide") isVideoTrack = true;
+          });
+        }
+      });
+      const trackSize = trackSizes[0];
+      if (isVideoTrack && trackSize) {
+        width = trackSize.width;
+        height = trackSize.height;
+      }
+    });
+  });
+
+  const aspect = width && height ? height / width : 0;
+  const isVertical = Boolean(width && height && height > width && aspect >= 1.45 && aspect <= 2.25);
+  const isDurationOk = Boolean(durationSeconds && durationSeconds <= 60.5);
+  const details = `${width ?? "?"}x${height ?? "?"}, ${durationSeconds ? `${durationSeconds.toFixed(1)}s` : "unknown duration"}`;
+  return { width, height, durationSeconds, isVertical, isDurationOk, details };
+}
+
+function assertShortsReady(inspection: ShortsInspection) {
+  if (!inspection.width || !inspection.height) {
+    throw new Error("Upload stopped: this MP4 could not be verified as a vertical YouTube Short. Re-split it with the Long → Shorts tool, then upload again.");
+  }
+  if (!inspection.isVertical) {
+    throw new Error(`Upload stopped: this file is ${inspection.details}, not vertical 9:16. Re-split it with the Long → Shorts tool so it uploads as a Short, not a regular video.`);
+  }
+  if (!inspection.isDurationOk) {
+    throw new Error(`Upload stopped: this file is ${inspection.details}. Shorts uploads from this app are capped at 60 seconds so YouTube classifies them as Shorts.`);
   }
 }
 
@@ -153,7 +279,7 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   const { supabaseAdmin, userId, videoId } = args;
   const { data: video, error } = await supabaseAdmin
     .from("videos")
-    .select("id,user_id,title,description,tags,video_storage_path,thumbnail_storage_path,video_url")
+    .select("id,user_id,title,description,tags,video_storage_path,thumbnail_storage_path,video_url,duration_seconds")
     .eq("id", videoId)
     .eq("user_id", userId)
     .single();
@@ -171,6 +297,9 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     if (!res.ok) throw new Error(`Could not fetch video URL: HTTP ${res.status}`);
     bytes = await res.arrayBuffer();
   }
+
+  const shortsInspection = inspectMp4ForShorts(bytes, video.duration_seconds ?? null);
+  assertShortsReady(shortsInspection);
 
   const meta: UploadMeta = {
     title: (args.title || video.title || "New Short").slice(0, 100),
@@ -199,5 +328,5 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     .eq("user_id", userId);
   if (updErr) throw new Error(updErr.message);
 
-  return { youtubeVideoId: youtubeId, url: `https://www.youtube.com/watch?v=${youtubeId}` };
+  return { youtubeVideoId: youtubeId, url: `https://www.youtube.com/shorts/${youtubeId}`, watchUrl: `https://www.youtube.com/watch?v=${youtubeId}`, shortsReady: shortsInspection };
 }
