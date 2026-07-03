@@ -514,9 +514,16 @@ function AutopilotPage() {
               <Clock className="h-3.5 w-3.5" /> Next scheduled slots
             </div>
             {countdown && (
-              <div className="mt-2 rounded-xl border border-primary/30 bg-primary/10 p-3">
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
-                <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+              <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/10 p-3">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Next upload in</div>
+                  <div className="mt-0.5 font-display text-2xl font-semibold tabular-nums text-primary-glow">{countdown}</div>
+                </div>
+                {countdown === "any moment now" && (
+                  <Button size="sm" onClick={() => dispatchWorkflow("due")} disabled={dispatching !== null}>
+                    {dispatching === "due" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />} Trigger now
+                  </Button>
+                )}
               </div>
             )}
             <div className="mt-2 flex flex-wrap gap-2">
