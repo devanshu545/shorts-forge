@@ -574,8 +574,10 @@ function SplitPage() {
                       );
                     })}
                   </motion.div>
+                  </>
                 )}
               </Card>
+
             </motion.div>
           )}
         </AnimatePresence>
