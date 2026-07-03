@@ -21,6 +21,7 @@ import {
   pickAutopilotTopic,
   getLatestAutopilotTestVideo,
   getAutopilotHealth,
+  triggerWorkflowNow,
 } from "@/lib/autopilot.functions";
 import {
   planCharacterShort,
@@ -62,6 +63,30 @@ function AutopilotPage() {
   const pickTopicFn = useServerFn(pickAutopilotTopic);
   const latestTestFn = useServerFn(getLatestAutopilotTestVideo);
   const healthFn = useServerFn(getAutopilotHealth);
+  const triggerFn = useServerFn(triggerWorkflowNow);
+
+  const [dispatching, setDispatching] = useState<null | "test" | "due">(null);
+  const dispatchWorkflow = async (mode: "test" | "due") => {
+    setDispatching(mode);
+    try {
+      const res = await triggerFn({ data: { forceTest: mode === "test" } });
+      if (res.ok) {
+        toast.success("GitHub workflow started", {
+          description: res.latestRunUrl ? "Opening the run…" : "Check GitHub Actions for progress.",
+          action: res.latestRunUrl
+            ? { label: "Open run", onClick: () => window.open(res.latestRunUrl!, "_blank") }
+            : { label: "Open Actions", onClick: () => window.open(res.runsUrl, "_blank") },
+        });
+      } else {
+        toast.error("Could not start workflow", { description: res.message });
+      }
+    } catch (err) {
+      toast.error("Trigger failed", { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDispatching(null);
+    }
+  };
+
 
   const planFn = useServerFn(planCharacterShort);
   const saveScriptFn = useServerFn(saveScriptAsDraft);
