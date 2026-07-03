@@ -1,75 +1,47 @@
-## Plan: Server-Triggered Autopilot + Long-Video → Shorts Splitter
+## Status of your two asks
 
-### Part 1 — Server-triggered GitHub workflow
+### 1) Server-triggered Autopilot — already done in the previous turn
+- `GITHUB_FINE_GRAINED_PERSONAL_ACCESS_TOKEN` + `GITHUB_REPO` (`devanshu545/shorts-forge`) are stored as backend secrets.
+- `src/lib/github-dispatch.server.ts` calls GitHub's `workflow_dispatch` REST API with that PAT.
+- `triggerWorkflowNow` server fn is wired into the Autopilot page:
+  - "Run Workflow" button now dispatches `autopilot.yml` from the server (no more opening GitHub).
+  - When a slot goes "any moment now", a **Trigger now** button appears in the health card.
+- Heartbeats table + health dashboard (heartbeat age, YouTube status, next slot countdown) are live.
 
-**Secret wiring**
-- Reuse the existing `GITHUB_FINE_GRAINED_PERSONAL_ACCESS_TOKEN` secret (already stored). Also mirror it as `GITHUB_DISPATCH_TOKEN` for a clearer name, plus store `GITHUB_REPO=devanshu545/shorts-forge` via `set_secret`. No user form needed.
+Nothing else needs to change for ask #1 — it's ready to test by clicking Run Workflow on `/autopilot`.
 
-**New server helper** `src/lib/github-dispatch.server.ts`
-- `triggerAutopilotWorkflow({ forceTest }: { forceTest: boolean })` → POSTs to `https://api.github.com/repos/devanshu545/shorts-forge/actions/workflows/autopilot.yml/dispatches` with `Authorization: Bearer <token>` and body `{ ref: "main", inputs: { force_test: "true"|"false" } }`.
-- Returns `{ ok, status, message }`; surfaces GitHub error bodies for debugging.
+### 2) Long MP4 → multiple Shorts — what I'll build this turn
 
-**New protected server fn** in `src/lib/autopilot.functions.ts`
-- `triggerWorkflowNow` (uses `requireSupabaseAuth`, calls helper with `forceTest: true`).
-- Also add `dispatchDueSlotNow` used by the health card "Any moment now…" state — same helper, `forceTest: false`.
+**Database (migration)**
+- `long_videos` table: id, user_id, storage_path, original_filename, size_bytes, duration_seconds, clip_length (15–60s), max_clips, status (`uploaded|queued|processing|ready|failed`), clips_generated, error_message, timestamps. RLS: owner-only + service_role. GRANTs included.
+- Extend `videos` with `long_video_id`, `clip_start_seconds`, `clip_end_seconds` so generated clips appear in the normal Library and reuse the existing "Upload to YouTube" dialog.
 
-**UI wiring** in `src/routes/_authenticated/autopilot.tsx`
-- Replace the existing "Run Workflow (GitHub)" instruction/link with a real button that calls `triggerWorkflowNow` via `useServerFn`, shows toast with dispatch status, then polls `getAutopilotHealth` for 60s to reflect the new run.
-- Health card gains a "Trigger now" button when a slot is overdue > 2 min.
+**Backend**
+- `src/lib/splitter.functions.ts` — auth'd server fns: `createLongVideoUploadUrl` (signed upload URL to the `videos` bucket), `markLongVideoQueued`, `listLongVideos`, `listClipsForLongVideo`, `deleteLongVideo`.
+- Public endpoints under `src/routes/api/public/splitter/`:
+  - `tick` — worker pulls the next queued job (OIDC or `AUTOPILOT_SECRET`).
+  - `complete` — worker POSTs each finished clip (mp4 + thumbnail as base64 → Storage → `videos` row).
+  - `finish` — mark long video `ready`/`failed`.
+- Extend `src/lib/autopilot-auth.server.ts` to accept OIDC tokens from `splitter.yml` in addition to `autopilot.yml`.
 
-**Heartbeat/health**
-- No schema change. Health already reads `autopilot_heartbeats` via `supabaseAdmin`. Add a "Last dispatch" field to the health card sourced from a new `autopilot_dispatches` lightweight log (optional — can skip and just rely on GitHub run URL returned by dispatch API; keeping it simple: skip the extra table, show returned run info in a toast + link to Actions page).
+**Worker (runs on GitHub Actions, free)**
+- `.github/workflows/splitter.yml` — installs ffmpeg, cron every 10 min, `workflow_dispatch` with optional `long_video_id`, `id-token: write` for OIDC.
+- `scripts/splitter-runner.mjs` — downloads source, `ffprobe` duration, ffmpeg scene detection (`select='gt(scene,0.35)'`), picks up to `max_clips` non-overlapping windows, renders each to 1080×1920 (scale + center-crop, 30 fps, H.264 CRF 20, AAC 128k, `+faststart`), grabs a mid-frame thumbnail, POSTs back to `/complete`, then `/finish`.
 
-**Success criteria**
-- Clicking Run Workflow in the app returns 204 from GitHub, the Actions run appears within seconds, heartbeat updates, and a Short uploads without opening GitHub.
+**UI — new route `/split`**
+- Sidebar item "Long → Shorts" (Scissors icon).
+- Upload card: drop MP4, choose clip length (slider 15–60s) and max clips (1–15), progress bar, direct upload to Supabase Storage via signed URL, then queues the job and dispatches `splitter.yml` immediately.
+- Job list with live status badges (uploaded/queued/processing/ready/failed) and delete.
+- Clip grid for the selected job: 9:16 previews, timestamps, and the existing **Upload to YouTube** dialog per clip (you upload each Short manually, as requested).
 
----
+**Testing after build**
+- Upload a short sample MP4 → confirm signed-URL upload works, job goes `queued`.
+- Confirm `splitter.yml` gets dispatched, ffmpeg renders 1080×1920 clips, they land in `/split` and `/library` with playable previews.
+- Confirm one-click YouTube upload from a generated clip.
+- Report clip count, sizes, durations, and YouTube video IDs back to you.
 
-### Part 2 — Long MP4 → multiple Shorts splitter
-
-**Where**
-- New route: `src/routes/_authenticated/split.tsx` ("Long → Shorts"). Sidebar entry added in `src/components/app-sidebar.tsx`.
-
-**Upload path (client)**
-- Drag-drop MP4 (up to ~500 MB). Upload directly to Supabase `videos` bucket at `long-source/<userId>/<uuid>.mp4` using resumable client upload; store metadata row in a new `long_videos` table (id, user_id, source_path, duration, status, created_at).
-
-**Server-side split** — runs on GitHub Actions worker (ffmpeg already installed there)
-- New public route `src/routes/api/public/splitter/tick.tsx` (OIDC-authorized like autopilot). Returns next queued `long_videos` job with a signed download URL + user preferences.
-- New script `scripts/splitter-runner.mjs`:
-  1. Downloads source MP4.
-  2. Runs `ffprobe` to get duration.
-  3. Detects scenes (`ffmpeg -vf select='gt(scene,0.4)'`) OR falls back to fixed windows.
-  4. Chooses N clips of 30–59 s (user configurable: 30/45/59, default 55).
-  5. For each clip: `ffmpeg -ss X -to Y -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30" -c:v libx264 -crf 20 -preset veryfast -c:a aac -b:a 128k -movflags +faststart` → vertical 1080×1920 Short.
-  6. Uploads each clip to `videos` bucket, creates a `videos` row (status=`ready`, `source: "split"`, links back to `long_video_id`).
-- New GitHub workflow `.github/workflows/splitter.yml` (cron every 10 min + workflow_dispatch), invoked on demand by a new server fn `triggerSplitterWorkflow` (same dispatch helper).
-
-**UI**
-- Split page shows: upload zone, per-video job status, list of generated Shorts with preview + "Upload to YouTube" button (reuses existing `UploadToYouTubeDialog`).
-- Options before submit: clip length (30/45/59 s), max clips (1–10), auto-caption toggle (adds burned karaoke captions using existing caption renderer — optional v2).
-
-**DB migration**
-```sql
-create table public.long_videos (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  source_path text not null,
-  duration_seconds int,
-  clip_length int not null default 55,
-  max_clips int not null default 5,
-  status text not null default 'queued',
-  error_message text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
--- GRANTs + RLS (owner-only), plus link column on videos: alter table public.videos add column long_video_id uuid references public.long_videos(id) on delete set null;
-```
-
-**Success criteria**
-- Upload a 5-min MP4 → within ~3 min, 5 vertical 1080×1920 Shorts appear in library, each playable, each uploadable to YouTube via existing dialog.
-
----
-
-### Out of scope (for this plan)
-- Auto-captioning of split clips (can be added in a follow-up).
-- Trimming inside the browser (ffmpeg.wasm) — too slow/OOM for long MP4s; server path is more reliable.
+### Technical notes
+- Cost: $0 — GitHub Actions Linux minutes are free on public repos; Supabase Storage + Data API stay in the free tier for the volumes you're pushing.
+- Long videos go to the existing private `videos` bucket under `long-sources/{userId}/{uuid}.mp4`; clips go under `clips/{userId}/{uuid}.mp4` with a signed URL when viewing.
+- Scene detection falls back to evenly-spaced windows if the video has few cuts, so any input (talking-head, gameplay, montage) still produces usable Shorts.
+- Clip length is hard-capped at 60s to stay inside YouTube's Shorts rules.
