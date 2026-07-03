@@ -291,15 +291,14 @@ async function encodeFastPolishedClipFromShort(
   durSec: number,
 ) {
   const fadeOut = Math.max(durSec - 0.45, 0.1).toFixed(2);
-  const vf = [
-    "scale=1080:1920:force_original_aspect_ratio=increase:flags=fast_bilinear",
-    "crop=1080:1920",
+  const tail = [
     "eq=saturation=1.2:contrast=1.07:brightness=0.015",
     "unsharp=3:3:0.7:3:3:0.0",
     "vignette=PI/7:eval=init",
     "fade=t=in:st=0:d=0.18",
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
+  const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
   const code = await ff.exec([
     "-y",
     "-i", inputClipName,
