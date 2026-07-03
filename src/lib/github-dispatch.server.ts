@@ -67,6 +67,9 @@ export function triggerAutopilotWorkflow(opts: { forceTest: boolean }) {
   return dispatchWorkflow("autopilot.yml", { force_test: opts.forceTest ? "true" : "false" });
 }
 
-export function triggerSplitterWorkflow(opts: { longVideoId?: string } = {}) {
-  return dispatchWorkflow("splitter.yml", opts.longVideoId ? { long_video_id: opts.longVideoId } : {});
+export function triggerSplitterWorkflow(opts: { longVideoId?: string; clipId?: string } = {}) {
+  const inputs: Record<string, string> = {};
+  if (opts.longVideoId) inputs.long_video_id = opts.longVideoId;
+  if (opts.clipId) inputs.clip_id = opts.clipId;
+  return dispatchWorkflow("splitter.yml", inputs);
 }

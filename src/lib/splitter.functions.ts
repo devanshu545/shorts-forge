@@ -102,6 +102,39 @@ export const createClipUploadUrls = createServerFn({ method: "POST" })
     };
   });
 
+export const queueClip4KUpgrade = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => z.object({ clipId: z.string().uuid() }).parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: clip, error } = await supabaseAdmin
+      .from("videos")
+      .select("id,user_id,video_storage_path")
+      .eq("id", data.clipId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!clip?.video_storage_path) throw new Error("Clip not found or missing storage path");
+
+    await supabaseAdmin
+      .from("videos")
+      .update({ generation_stage: "Native 4K upgrade queued", generation_progress: 5 } as never)
+      .eq("id", data.clipId)
+      .eq("user_id", context.userId);
+
+    const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
+    const dispatch = await triggerSplitterWorkflow({ clipId: data.clipId });
+    if (!dispatch.ok) {
+      await supabaseAdmin
+        .from("videos")
+        .update({ generation_stage: "4K queue failed", generation_progress: 0 } as never)
+        .eq("id", data.clipId)
+        .eq("user_id", context.userId);
+      throw new Error(dispatch.message);
+    }
+    return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null };
+  });
+
 // Register a clip produced by the browser splitter. The browser has already
 // uploaded the MP4 + thumbnail to Supabase Storage; this only inserts the row.
 export const registerSplitClip = createServerFn({ method: "POST" })
@@ -204,7 +237,7 @@ export const listClipsForLongVideo = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { data: rows, error } = await context.supabase
       .from("videos")
-      .select("id,title,description,tags,hashtags,video_url,thumbnail_url,youtube_video_id,duration_seconds,clip_start_seconds,clip_end_seconds,status,created_at")
+      .select("id,title,description,tags,hashtags,video_url,thumbnail_url,youtube_video_id,duration_seconds,clip_start_seconds,clip_end_seconds,status,generation_stage,generation_progress,created_at")
       .eq("user_id", context.userId)
       .eq("long_video_id", data.longVideoId)
       .order("clip_start_seconds", { ascending: true });
