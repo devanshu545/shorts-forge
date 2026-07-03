@@ -126,11 +126,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const results: ClipResult[] = [];
 
   // ffmpeg.wasm progress event — reflects current exec.
-  const progressUnsub = ff.on("progress", ({ progress, time }) => {
+  const onProgress = ({ progress, time }: { progress: number; time: number }) => {
     const clipPct = Math.max(0, Math.min(100, Math.round(progress * 100)));
-    // Rough fps guess from time (seconds encoded) vs wall clock elapsed for this clip.
     const elapsedSec = (Date.now() - startedAt) / 1000;
-    const fps = time > 0 && currentClipDuration > 0 ? Number(((time / 1_000_000) / Math.max(elapsedSec, 0.5)).toFixed(2)) * 30 : null;
+    const fps = time > 0 && currentClipDuration > 0
+      ? Number((((time / 1_000_000) / Math.max(elapsedSec, 0.5)) * 30).toFixed(1))
+      : null;
     const overallDone = results.length + progress;
     const percent = Math.round((overallDone / Math.max(total, 1)) * 100);
     const eta = percent > 5 ? Math.round((elapsedSec / percent) * (100 - percent)) : null;
@@ -145,7 +146,8 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       uploadMBps: null,
       message: `Encoding clip ${results.length + 1} of ${total} (${clipPct}%) — ${target.w}×${target.h}`,
     });
-  });
+  };
+  ff.on("progress", onProgress);
 
   try {
     for (let i = 0; i < windows.length; i++) {
