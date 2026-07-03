@@ -80,8 +80,25 @@ export async function getFreshYouTubeAccessToken(supabaseAdmin: SupabaseAdmin, u
   return conn.access_token as string;
 }
 
+// Ensures YouTube treats the upload as a Short. YouTube's Shorts shelf
+// classifier weighs the #Shorts hashtag in the title/description alongside
+// aspect ratio and duration. We append it (case-insensitive check) so a
+// vertical 9:16 clip is never misclassified as a regular video.
+function ensureShortsHashtag(title: string, description: string) {
+  const hasTag = (s: string) => /(^|\s|#)shorts(\b|#|\s|$)/i.test(s);
+  const nextTitle = hasTag(title) ? title : `${title} #Shorts`.trim();
+  const nextDesc = hasTag(description)
+    ? description
+    : `${description ? description.trim() + "\n\n" : ""}#Shorts`;
+  return { nextTitle: nextTitle.slice(0, 100), nextDesc: nextDesc.slice(0, 5000) };
+}
+
 export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer | Uint8Array, meta: UploadMeta) {
   const file = asArrayBuffer(bytes);
+  const { nextTitle, nextDesc } = ensureShortsHashtag(meta.title, meta.description);
+  const tagSet = new Set((meta.tags || []).map((t) => t.trim()).filter(Boolean));
+  tagSet.add("Shorts");
+  tagSet.add("shorts");
   const initRes = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
     method: "POST",
     headers: {
@@ -92,9 +109,9 @@ export async function uploadMp4ToYouTube(accessToken: string, bytes: ArrayBuffer
     },
     body: JSON.stringify({
       snippet: {
-        title: meta.title.slice(0, 100),
-        description: meta.description.slice(0, 5000),
-        tags: meta.tags.slice(0, 30),
+        title: nextTitle,
+        description: nextDesc,
+        tags: Array.from(tagSet).slice(0, 30),
         categoryId: "24",
       },
       status: { privacyStatus: meta.privacyStatus, selfDeclaredMadeForKids: false },
