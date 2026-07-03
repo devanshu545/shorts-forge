@@ -37,8 +37,8 @@ export function OneClickPublishButton({ video, hint, onUploaded, size = "sm", la
       setStage("seo");
       const meta = await seo({ data: {
         hint: hint || video.title || "Trending YouTube Short",
-        existingTitle: video.title || undefined,
       } });
+
       setStage("uploading");
       const result = await upload({ data: {
         videoId: video.id,
