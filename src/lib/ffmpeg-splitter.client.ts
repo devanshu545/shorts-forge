@@ -343,9 +343,9 @@ async function encodeShortsSafeClipFromBytes(
 }
 
 async function ensureVerticalShortMp4(ff: FFmpeg, mp4: Uint8Array, clipName: string, durSec: number, clipIndex: number) {
-  const meta = await probeMp4Meta(mp4);
-  if (meta.duration > 60.5) throw new Error(`Clip ${clipIndex} is ${Math.round(meta.duration)}s; YouTube Shorts must be 60s or less.`);
-  if (isVerticalShortMeta(meta)) return mp4;
+  const meta = await probeMp4Meta(mp4).catch(() => null);
+  if (meta?.duration && meta.duration > 60.5) throw new Error(`Clip ${clipIndex} is ${Math.round(meta.duration)}s; YouTube Shorts must be 60s or less.`);
+  if (meta && isVerticalShortMeta(meta)) return mp4;
   await encodeShortsSafeClipFromBytes(ff, mp4, clipName, durSec);
   const safe = await readValidMp4(ff, clipName, clipIndex);
   const safeMeta = await probeMp4Meta(safe);
