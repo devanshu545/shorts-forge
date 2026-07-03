@@ -9,6 +9,8 @@ const WASM_MANIFEST_URL = "/ffmpeg-core/ffmpeg-core.wasm.asset.json";
 
 let ffmpegInstance: FFmpeg | null = null;
 let recentLogs: string[] = [];
+let activeAbort = false;
+let abortReason: string | null = null;
 
 function ffmpegLogTail(lines = 14): string {
   return recentLogs.slice(-lines).join(" | ") || "no ffmpeg log output";
@@ -88,6 +90,25 @@ function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
     "fade=t=in:st=0:d=0.3",
     `fade=t=out:st=${fadeOutStart}:d=0.4`,
   ].join(",");
+}
+
+function compactPolishFilter(): string {
+  return [
+    "eq=saturation=1.12:contrast=1.04:brightness=0.01",
+    "unsharp=3:3:0.55:3:3:0.0",
+    "fade=t=in:st=0:d=0.18",
+  ].join(",");
+}
+
+function assertNotAborted() {
+  if (activeAbort) throw new Error(abortReason || "Cancelled by user");
+}
+
+function terminateActive(reason: string) {
+  activeAbort = true;
+  abortReason = reason;
+  try { ffmpegInstance?.terminate(); } catch { /* noop */ }
+  ffmpegInstance = null;
 }
 
 async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<{ jpg: Uint8Array; frames: string[] }> {
@@ -195,6 +216,49 @@ async function cutClipInstant(ff: FFmpeg, inputName: string, clipName: string, s
   if (code !== 0) throw new Error(`instant copy exit ${code}: ${ffmpegLogTail()}`);
 }
 
+async function cutClipFastCopyFromFile(ff: FFmpeg, inputName: string, clipName: string, startSec: number, durSec: number) {
+  const code = await ff.exec([
+    "-y",
+    "-i", inputName,
+    "-ss", String(startSec),
+    "-t", durSec.toFixed(2),
+    "-map", "0:v:0",
+    "-map", "0:a?",
+    "-c", "copy",
+    "-avoid_negative_ts", "make_zero",
+    "-movflags", "+faststart",
+    clipName,
+  ]);
+  if (code !== 0) throw new Error(`fast copy exit ${code}: ${ffmpegLogTail()}`);
+}
+
+async function encodeFastPolishedClip(
+  ff: FFmpeg,
+  inputName: string,
+  clipName: string,
+  startSec: number,
+  durSec: number,
+) {
+  const code = await ff.exec([
+    "-y",
+    "-ss", String(startSec),
+    "-i", inputName,
+    "-t", durSec.toFixed(2),
+    "-vf", compactPolishFilter(),
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-x264-params", "keyint=90:min-keyint=45:scenecut=0:rc-lookahead=0:ref=1",
+    "-crf", "20",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "copy",
+    "-movflags", "+faststart",
+    "-threads", "0",
+    clipName,
+  ]);
+  if (code !== 0) throw new Error(`fast polish exit ${code}: ${ffmpegLogTail()}`);
+}
+
 // One-pass polish encode: cut + cinematic filter chain at 1080x1920.
 // Tuned for maximum wasm throughput: ultrafast + zerolatency + tiny GOP lookahead.
 async function encodePolishedClip(
@@ -231,7 +295,7 @@ async function encodePolishedClip(
 
 async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Promise<Uint8Array> {
   const mp4Data = await ff.readFile(clipName);
-  const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
+  const mp4 = mp4Data instanceof Uint8Array ? new Uint8Array(mp4Data) : new TextEncoder().encode(String(mp4Data));
   if (mp4.byteLength < 50_000) {
     throw new Error(`Generated clip ${clipIndex} is empty (${mp4.byteLength} bytes). ${ffmpegLogTail()}`);
   }
@@ -239,10 +303,14 @@ async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Pr
 }
 
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
+  activeAbort = false;
+  abortReason = null;
+  const hardBudgetSec = Math.max(60, opts.maxProcessingSeconds ?? 290);
   const notify = (patch: Partial<ClipProgress> & Pick<ClipProgress, "stage" | "message">) => {
     opts.onProgress({
       index: 0, total: 0, percent: 0, clipPercent: 0,
-      etaSeconds: null, fps: null, uploadMBps: null,
+      etaSeconds: null, elapsedSeconds: 0, fps: null, uploadMBps: null,
+      lastLog: ffmpegLogTail(3), updatedAt: Date.now(),
       ...patch,
     } as ClipProgress);
   };
@@ -252,7 +320,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
-  const ff = await getFFmpeg();
+  let ff = await getFFmpeg();
 
   notify({ stage: "reading-file", message: `Loading ${(file.size / 1024 / 1024).toFixed(1)}MB into ffmpeg…` });
   const inputName = "input.mp4";
@@ -272,9 +340,9 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
     notify({
       index: results.length + 1, total,
       stage: opts.polish ? "polishing" : "encoding",
-      percent, clipPercent: clipPct, etaSeconds: eta, fps: null, uploadMBps: null,
+      percent, clipPercent: clipPct, etaSeconds: eta, elapsedSeconds: Math.round(elapsedSec), fps: null, uploadMBps: null,
       message: opts.polish
-        ? `Polishing clip ${results.length + 1} of ${total} (${clipPct}%) — cinematic pass`
+        ? `Fast polishing clip ${results.length + 1} of ${total} (${clipPct}%) — budget protected`
         : `Cutting clip ${results.length + 1} of ${total} (${clipPct}%)`,
     });
   };
@@ -282,22 +350,43 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
   try {
     for (let i = 0; i < windows.length; i++) {
+      assertNotAborted();
       const w = windows[i];
       const dur = w.end - w.start;
       const clipName = `clip${i + 1}.mp4`;
       let mp4: Uint8Array | null = null;
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const remainingBudget = hardBudgetSec - elapsed;
+      const perClipBudget = Math.max(12, Math.min(55, Math.floor((remainingBudget - 20) / Math.max(windows.length - i, 1))));
 
       try {
-        if (opts.polish) {
-          await encodePolishedClip(ff, inputName, clipName, w.start, dur);
+        if (opts.polish && remainingBudget > 30 && perClipBudget > 12) {
+          let timeoutId = 0;
+          await Promise.race([
+            encodeFastPolishedClip(ff, inputName, clipName, w.start, dur),
+            new Promise<never>((_, reject) => {
+              const timeoutMs = perClipBudget * 1000;
+              timeoutId = window.setTimeout(() => {
+                terminateActive("Fast polish exceeded its per-clip budget; using instant HD fallback");
+                reject(new Error(abortReason || "Fast polish switched to instant fallback"));
+              }, timeoutMs);
+            }),
+          ]).finally(() => window.clearTimeout(timeoutId));
         } else {
-          await cutClipInstant(ff, inputName, clipName, w.start, dur);
+          await cutClipFastCopyFromFile(ff, inputName, clipName, w.start, dur);
         }
         mp4 = await readValidMp4(ff, clipName, i + 1);
       } catch (err) {
+        if (abortReason === "Cancelled by user") throw err;
         console.warn("[splitter] primary path failed, retrying with instant copy", err);
         try { await ff.deleteFile(clipName); } catch { /* noop */ }
-        await cutClipInstant(ff, inputName, clipName, w.start, dur);
+        if (!ffmpegInstance || activeAbort) {
+          activeAbort = false;
+          abortReason = null;
+          ff = await getFFmpeg();
+          await ff.writeFile(inputName, await fetchFile(file));
+        }
+        await cutClipFastCopyFromFile(ff, inputName, clipName, w.start, dur);
         mp4 = await readValidMp4(ff, clipName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
@@ -313,6 +402,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         needsUpscale: opts.resolution === "4k-smart",
         title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s`,
       });
+      opts.onClip?.(results[results.length - 1]);
 
       try { await ff.deleteFile(clipName); } catch { /* noop */ }
     }
@@ -328,22 +418,34 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   return results;
 }
 
+export function cancelSplitVideoInBrowser() {
+  terminateActive("Cancelled by user");
+}
+
 // Smart-4K background upscale: takes an existing 1080p MP4 and re-encodes to
 // 2160x3840 with lanczos + sharpen. Called AFTER instant HD clips are already
 // live in the library, so the user is never blocked on 4K encode time.
 export async function upscaleClipTo4K(
   mp4: Uint8Array,
   onProgress?: (pct: number) => void,
+  maxSeconds = 290,
 ): Promise<Uint8Array> {
+  activeAbort = false;
+  abortReason = null;
   const ff = await getFFmpeg();
   const inName = `up_in_${Date.now()}.mp4`;
   const outName = `up_out_${Date.now()}.mp4`;
-  await ff.writeFile(inName, mp4);
+  // ffmpeg.wasm may detach/transfers the supplied ArrayBuffer. Always write a
+  // copy so the caller's local clip bytes remain usable for preview/retry.
+  await ff.writeFile(inName, new Uint8Array(mp4));
+  const startedAt = Date.now();
 
   const handler = ({ progress }: { progress: number }) => {
     onProgress?.(Math.max(0, Math.min(100, Math.round(progress * 100))));
+    if ((Date.now() - startedAt) / 1000 > maxSeconds) activeAbort = true;
   };
   ff.on("progress", handler);
+  const timeout = window.setTimeout(() => terminateActive("4K upgrade hit the 5-minute budget"), maxSeconds * 1000);
   try {
     // fast_bilinear scale (~5x faster than lanczos in wasm) + strong unsharp
     // restores lanczos-equivalent perceived sharpness at a fraction of the CPU.
@@ -370,12 +472,14 @@ export async function upscaleClipTo4K(
       outName,
     ]);
     if (code !== 0) throw new Error(`4K upscale exit ${code}: ${ffmpegLogTail()}`);
+    assertNotAborted();
 
     const out = await ff.readFile(outName);
-    const bytes = out instanceof Uint8Array ? out : new TextEncoder().encode(String(out));
+    const bytes = out instanceof Uint8Array ? new Uint8Array(out) : new TextEncoder().encode(String(out));
     if (bytes.byteLength < 100_000) throw new Error("4K output too small — treating as failure");
     return bytes;
   } finally {
+    window.clearTimeout(timeout);
     ff.off("progress", handler);
     try { await ff.deleteFile(inName); } catch { /* noop */ }
     try { await ff.deleteFile(outName); } catch { /* noop */ }

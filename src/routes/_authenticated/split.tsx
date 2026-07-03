@@ -16,6 +16,7 @@ import { Scissors, UploadCloud, Loader2, Trash2, RefreshCw, Sparkles, Zap, Wand2
 import { supabase } from "@/integrations/supabase/client";
 import {
   createLongVideoUploadUrl,
+  createClipUploadUrls,
   markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
@@ -36,7 +37,11 @@ const runBrowserSplitter = createClientOnlyFn((file: File, opts: SplitOptions) =
 );
 
 const runUpscale = createClientOnlyFn((mp4: Uint8Array, onProg: (pct: number) => void) =>
-  import("@/lib/ffmpeg-splitter.client").then(({ upscaleClipTo4K }) => upscaleClipTo4K(mp4, onProg)),
+  import("@/lib/ffmpeg-splitter.client").then(({ upscaleClipTo4K }) => upscaleClipTo4K(mp4, onProg, 290)),
+);
+
+const cancelBrowserSplitter = createClientOnlyFn(() =>
+  import("@/lib/ffmpeg-splitter.client").then(({ cancelSplitVideoInBrowser }) => cancelSplitVideoInBrowser()),
 );
 
 type ClipMeta = {
@@ -50,6 +55,7 @@ type ClipMeta = {
 function SplitPage() {
   const qc = useQueryClient();
   const createFn = useServerFn(createLongVideoUploadUrl);
+  const clipUrlFn = useServerFn(createClipUploadUrls);
   const queueFn = useServerFn(markLongVideoQueued);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
@@ -62,6 +68,7 @@ function SplitPage() {
   const [maxClips, setMaxClips] = useState(5);
   const [smart4k, setSmart4k] = useState(false);
   const [polish, setPolish] = useState(true);
+  const [backupSource, setBackupSource] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [progress, setProgress] = useState<ClipProgressData | null>(null);
@@ -91,42 +98,104 @@ function SplitPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const runBackground4KQueue = async (items: ClipResult[], stored: Record<number, { clipId: string; path: string }>) => {
-    for (let i = 0; i < items.length; i++) {
-      const clip = items[i];
-      const info = stored[clip.index];
-      if (!info) continue;
+  const uploadSigned = async (
+    signedUrl: string,
+    body: File | Uint8Array,
+    contentType: string,
+    onProgress?: (loaded: number, total: number, mbps: number) => void,
+  ) => {
+    const blob = body instanceof File
+      ? body
+      : new Blob([body.slice().buffer as ArrayBuffer], { type: contentType });
+    const totalBytes = body instanceof File ? body.size : body.byteLength;
+    let attempt = 0;
+    while (attempt < 3) {
+      const startedAt = Date.now();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const payload = new FormData();
+          payload.append("cacheControl", "3600");
+          payload.append("", blob);
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", signedUrl, true);
+          xhr.timeout = 10 * 60 * 1000;
+          xhr.setRequestHeader("x-upsert", "true");
+          xhr.upload.onprogress = (e) => {
+            const loaded = e.lengthComputable ? e.loaded : 0;
+            const total = e.lengthComputable ? e.total : totalBytes;
+            const secs = Math.max((Date.now() - startedAt) / 1000, 0.1);
+            onProgress?.(loaded, total, loaded / 1024 / 1024 / secs);
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText || "upload failed"}`));
+          };
+          xhr.onerror = () => reject(new Error("Network error during upload"));
+          xhr.ontimeout = () => reject(new Error("Upload timed out"));
+          xhr.send(payload);
+        });
+        return;
+      } catch (err) {
+        attempt += 1;
+        if (attempt >= 3) throw err;
+        onProgress?.(0, totalBytes, 0);
+        await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+      }
+    }
+  };
+
+  const runSingle4KUpgrade = async (clipId: string, storagePath: string, mp4: Uint8Array) => {
+      const startedAt = Date.now();
       setClipMeta((m) => ({
         ...m,
-        [info.clipId]: { ...m[info.clipId], upscale: { state: "running", pct: 0 } },
+        [clipId]: { ...m[clipId], upscale: { state: "running", pct: 0 } },
       }));
       try {
-        const upscaled = await runUpscale(clip.mp4, (pct) => {
+        const upscaled = await runUpscale(mp4, (pct) => {
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          const eta = pct > 3 ? Math.round((elapsed / pct) * (100 - pct)) : null;
+          setProgress({
+            index: 1, total: 1, stage: "upscaling",
+            percent: pct, clipPercent: pct, etaSeconds: eta, elapsedSeconds: elapsed,
+            fps: null, uploadMBps: null, updatedAt: Date.now(),
+            message: `Upgrading selected clip to 4K… ${pct}%`,
+          });
           setClipMeta((m) => ({
             ...m,
-            [info.clipId]: { ...m[info.clipId], upscale: { state: "running", pct } },
+            [clipId]: { ...m[clipId], upscale: { state: "running", pct } },
           }));
         });
         const up = await supabase.storage
           .from("videos")
-          .upload(info.path, upscaled, { contentType: "video/mp4", upsert: true });
+          .upload(storagePath, upscaled, { contentType: "video/mp4", upsert: true });
         if (up.error) throw new Error(up.error.message);
         setClipMeta((m) => ({
           ...m,
-          [info.clipId]: { ...m[info.clipId], upscale: { state: "done", pct: 100 } },
+          [clipId]: { ...m[clipId], upscale: { state: "done", pct: 100 } },
         }));
+        setProgress({
+          index: 1, total: 1, stage: "done", percent: 100, clipPercent: 100,
+          etaSeconds: 0, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+          fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: "4K upgrade ready.",
+        });
         qc.invalidateQueries({ queryKey: ["long-clips", selectedId] });
       } catch (err) {
         console.warn("[upscale] failed", err);
         setClipMeta((m) => ({
           ...m,
-          [info.clipId]: {
-            ...m[info.clipId],
+          [clipId]: {
+            ...m[clipId],
             upscale: { state: "failed", pct: 0, error: err instanceof Error ? err.message : "upscale failed" },
           },
         }));
+        setProgress({
+          index: 1, total: 1, stage: "error", percent: 0, clipPercent: 0,
+          etaSeconds: null, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+          fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: err instanceof Error ? err.message : "4K upgrade failed; HD clip is still ready.",
+        });
       }
-    }
   };
 
   const startUpload = async () => {
@@ -145,74 +214,55 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
-      // Upload source in the BACKGROUND with real progress via XHR PUT to the signed URL.
-      // Do NOT block splitting on this — the splitter reads the local File directly.
-      const uploadPromise: Promise<void> = new Promise((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", info.signedUrl, true);
-        xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
-        xhr.setRequestHeader("x-upsert", "true");
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const pct = Math.max(1, Math.min(99, Math.round((e.loaded / e.total) * 100)));
+      const uploadPromise = backupSource
+        ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
+            const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
             setUploadPct(pct);
-          }
-        };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) setUploadPct(100);
-          else console.warn("[source-upload] failed", xhr.status, xhr.responseText);
-          resolve();
-        };
-        xhr.onerror = () => { console.warn("[source-upload] network error"); resolve(); };
-        xhr.send(file);
-      });
+          }).then(() => setUploadPct(100)).catch((err) => console.warn("[source-upload] failed", err))
+        : Promise.resolve();
 
       // Kick backend queue marker in parallel; don't wait.
       queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
 
-      // Start splitting IMMEDIATELY from the local File — no need to wait for upload.
-      const results = await runBrowserSplitter(file, {
-        clipLength,
-        maxClips,
-        resolution: smart4k ? "4k-smart" : "hd",
-        polish,
-        onProgress: setProgress,
-      });
+      const uploadTasks: Promise<{ ok: true } | { ok: false; error: Error }>[] = [];
 
-      // Let background upload finish quietly, but never block the UI on it.
-      uploadPromise.catch(() => {});
+      const uploadClip = async (clip: ClipResult) => {
+        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index } });
+        const clipBytes = clip.mp4.byteLength;
+        const thumbBytes = clip.thumbnailJpg.byteLength;
+        const totalBytes = clipBytes + thumbBytes;
+        let videoLoaded = 0;
+        let thumbLoaded = 0;
+        const startedAt = Date.now();
+        const updateUploadProgress = (message: string, mbps: number) => {
+          const loaded = videoLoaded + thumbLoaded;
+          setProgress({
+            index: clip.index, total: maxClips, stage: "uploading",
+            percent: Math.max(1, Math.min(99, Math.round((loaded / Math.max(totalBytes, 1)) * 100))),
+            clipPercent: Math.max(1, Math.min(100, Math.round((loaded / Math.max(totalBytes, 1)) * 100))),
+            etaSeconds: mbps > 0 ? Math.round(((totalBytes - loaded) / 1024 / 1024) / mbps) : null,
+            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+            fps: null, uploadMBps: mbps, uploadedBytes: loaded, totalBytes, updatedAt: Date.now(),
+            message,
+          });
+        };
 
-
-      const { data: userData } = await supabase.auth.getUser();
-      const userId = userData.user?.id;
-      if (!userId) throw new Error("Not signed in");
-
-      const storedByIndex: Record<number, { clipId: string; path: string }> = {};
-
-      for (let i = 0; i < results.length; i++) {
-        const clip = results[i];
-        const t0 = Date.now();
-        setProgress({
-          index: i + 1, total: results.length, stage: "uploading",
-          percent: Math.round((i / results.length) * 100),
-          clipPercent: 0, etaSeconds: null, fps: null, uploadMBps: null,
-          message: `Uploading clip ${i + 1} of ${results.length} to storage…`,
-        });
-        const clipId = crypto.randomUUID();
-        const videoPath = `${userId}/${clipId}/clip.mp4`;
-        const thumbPath = `${userId}/${clipId}.jpg`;
-        const upV = await supabase.storage.from("videos").upload(videoPath, clip.mp4, { contentType: "video/mp4", upsert: true });
-        if (upV.error) throw new Error(upV.error.message);
-        const upT = await supabase.storage.from("thumbnails").upload(thumbPath, clip.thumbnailJpg, { contentType: "image/jpeg", upsert: true });
-        if (upT.error) throw new Error(upT.error.message);
-        const mb = clip.mp4.byteLength / 1024 / 1024;
-        const secs = (Date.now() - t0) / 1000;
-        setProgress((p) => p && { ...p, uploadMBps: mb / Math.max(secs, 0.1) });
+        await Promise.all([
+          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, "video/mp4", (loaded, _total, mbps) => {
+            videoLoaded = loaded;
+            updateUploadProgress(`Uploading clip ${clip.index} video…`, mbps);
+          }),
+          uploadSigned(uploadInfo.thumbnailSignedUrl, clip.thumbnailJpg, "image/jpeg", (loaded, _total, mbps) => {
+            thumbLoaded = loaded;
+            updateUploadProgress(`Uploading clip ${clip.index} thumbnail…`, mbps);
+          }),
+        ]);
 
         await registerFn({ data: {
+          clipId: uploadInfo.clipId,
           longVideoId: info.longVideoId,
-          videoStoragePath: videoPath,
-          thumbnailStoragePath: thumbPath,
+          videoStoragePath: uploadInfo.videoPath,
+          thumbnailStoragePath: uploadInfo.thumbnailPath,
           title: clip.title,
           description: `Auto-cut from long-form video (${Math.round(clip.startSeconds)}s–${Math.round(clip.endSeconds)}s).\n\n#shorts #shortsfeed`,
           tags: ["shorts", "shorts fyp", "clip", "highlight"],
@@ -223,19 +273,40 @@ function SplitPage() {
           fileSizeBytes: clip.mp4.byteLength,
         } });
 
-        storedByIndex[clip.index] = { clipId, path: videoPath };
         setClipMeta((m) => ({
           ...m,
-          [clipId]: {
-            clipId,
+          [uploadInfo.clipId]: {
+            clipId: uploadInfo.clipId,
             frames: clip.frames,
-            storagePath: videoPath,
+            storagePath: uploadInfo.videoPath,
             mp4: clip.mp4,
             upscale: { state: smart4k ? "idle" : "done", pct: smart4k ? 0 : 100 },
           },
         }));
         qc.invalidateQueries({ queryKey: ["long-clips", info.longVideoId] });
-      }
+      };
+
+      // Start splitting IMMEDIATELY from the local File — no need to wait for upload.
+      const results = await runBrowserSplitter(file, {
+        clipLength,
+        maxClips,
+        resolution: smart4k ? "4k-smart" : "hd",
+        polish,
+        onProgress: setProgress,
+        maxProcessingSeconds: 290,
+        onClip: (clip) => {
+          const task = uploadClip(clip)
+            .then(() => ({ ok: true }) as const)
+            .catch((error: Error) => ({ ok: false, error }) as const);
+          uploadTasks.push(task);
+        },
+      });
+
+      // Let background upload finish quietly, but never block the UI on it.
+      uploadPromise.catch(() => {});
+      const uploadResults = await Promise.all(uploadTasks);
+      const uploadFailure = uploadResults.find((r) => !r.ok);
+      if (uploadFailure && !uploadFailure.ok) throw uploadFailure.error;
 
       await finishFn({ data: { longVideoId: info.longVideoId, status: "ready" } });
       qc.invalidateQueries({ queryKey: ["long-videos"] });
@@ -247,10 +318,7 @@ function SplitPage() {
       toast.success(`Generated ${results.length} short${results.length === 1 ? "" : "s"}`);
       setFile(null);
 
-      if (smart4k) {
-        toast.info("Upgrading clips to 4K in the background…");
-        void runBackground4KQueue(results, storedByIndex);
-      }
+      if (smart4k) toast.info("HD clips are ready. Use Upgrade 4K per clip so nothing stalls.");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
       toast.error(msg);
@@ -322,7 +390,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Lanczos scale, sharpen, color boost, vignette, fade in/out. Adds ~30s per clip.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Fast color/sharpen polish with a 5-minute safety budget. Falls back to instant HD if slow.</p>
               </div>
               <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
@@ -330,12 +398,20 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5 text-primary-glow" /> Smart 4K</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Clips appear in HD instantly, then upgrade to 4K in the background. No waiting.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Show per-clip 4K upgrade buttons after HD is ready. No automatic queue stalls.</p>
               </div>
               <Switch checked={smart4k} onCheckedChange={setSmart4k} />
             </div>
 
-            {busy && uploadPct > 0 && uploadPct < 100 && (
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+              <div className="min-w-0">
+                <Label>Backup source video</Label>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Off by default for speed. Clips still save normally.</p>
+              </div>
+              <Switch checked={backupSource} onCheckedChange={setBackupSource} />
+            </div>
+
+            {busy && backupSource && uploadPct > 0 && uploadPct < 100 && (
               <div className="space-y-1">
                 <Progress value={uploadPct} className="h-2" />
                 <p className="text-xs text-muted-foreground">Backing up source in background… {uploadPct}% (splitting has already started, you don't need to wait)</p>
@@ -350,6 +426,11 @@ function SplitPage() {
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scissors className="h-4 w-4" />}
               {busy ? "Working…" : "Create Shorts"}
             </Button>
+            {busy && (
+              <Button variant="outline" onClick={() => cancelBrowserSplitter()} className="w-full">
+                Stop current render
+              </Button>
+            )}
           </div>
         </Card>
       </motion.div>
@@ -472,12 +553,19 @@ function SplitPage() {
                                 )}
                               </div>
                             </div>
-                            <OneClickPublishButton
-                              video={c}
-                              frames={meta?.frames}
-                              hint={`Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s.`}
-                              onUploaded={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
-                            />
+                            <div className="flex items-center gap-2">
+                              {smart4k && meta && upscaleState?.state === "idle" && (
+                                <Button size="sm" variant="outline" onClick={() => runSingle4KUpgrade(meta.clipId, meta.storagePath, meta.mp4)}>
+                                  Upgrade 4K
+                                </Button>
+                              )}
+                              <OneClickPublishButton
+                                video={c}
+                                frames={meta?.frames}
+                                hint={`Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s.`}
+                                onUploaded={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
+                              />
+                            </div>
                           </div>
                         </motion.div>
                       );
