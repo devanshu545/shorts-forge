@@ -512,9 +512,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
           } catch (err) {
             if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
-            throw err;
-          }
-          } catch (err) {
             if (abortReason === "Cancelled by user") throw err;
             console.warn("[splitter] polish skipped; instant HD kept", err);
             skipFurtherPolish = true;
