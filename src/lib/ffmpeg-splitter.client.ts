@@ -295,7 +295,7 @@ async function encodePolishedClip(
 
 async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Promise<Uint8Array> {
   const mp4Data = await ff.readFile(clipName);
-  const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
+  const mp4 = mp4Data instanceof Uint8Array ? new Uint8Array(mp4Data) : new TextEncoder().encode(String(mp4Data));
   if (mp4.byteLength < 50_000) {
     throw new Error(`Generated clip ${clipIndex} is empty (${mp4.byteLength} bytes). ${ffmpegLogTail()}`);
   }
@@ -475,7 +475,7 @@ export async function upscaleClipTo4K(
     assertNotAborted();
 
     const out = await ff.readFile(outName);
-    const bytes = out instanceof Uint8Array ? out : new TextEncoder().encode(String(out));
+    const bytes = out instanceof Uint8Array ? new Uint8Array(out) : new TextEncoder().encode(String(out));
     if (bytes.byteLength < 100_000) throw new Error("4K output too small — treating as failure");
     return bytes;
   } finally {
