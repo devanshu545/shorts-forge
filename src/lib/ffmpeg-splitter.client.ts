@@ -161,7 +161,7 @@ async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetSec: numb
   let timeoutId = 0;
   try {
     return await Promise.race([
-      ff.exec(args),
+      ff.exec(args, Math.max(5, budgetSec)),
       new Promise<number>((_, reject) => {
         timeoutId = window.setTimeout(() => {
           terminateActive(`${label} exceeded its safe time budget; keeping the fastest working Shorts path`);
