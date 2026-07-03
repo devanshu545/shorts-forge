@@ -321,6 +321,7 @@ async function encodeFastPolishedClipFromShort(
   inputClipName: string,
   clipName: string,
   durSec: number,
+  bedFile?: string | null,
 ) {
   const fadeOut = Math.max(durSec - 0.45, 0.1).toFixed(2);
   const tail = [
@@ -331,24 +332,21 @@ async function encodeFastPolishedClipFromShort(
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
   const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
-  const code = await ff.exec([
-    "-y",
-    "-i", inputClipName,
-    "-vf", vf,
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-tune", "zerolatency",
+  const voiceChain = `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`;
+  const args: string[] = ["-y", "-i", inputClipName];
+  if (bedFile) args.push("-i", bedFile);
+  args.push("-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
     "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
-    "-crf", "21",
-    "-pix_fmt", "yuv420p",
-    "-c:a", "aac",
-    "-b:a", "160k",
-    "-ac", "2",
-    "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
-    "-threads", "0",
-    clipName,
-  ]);
+    "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2");
+  if (bedFile) {
+    const bedChain = `[1:a]volume=0.26,highpass=f=60,lowpass=f=12000,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOut}:d=0.6[bed]`;
+    const filterComplex = `[0:a]${voiceChain}[voice];${bedChain};[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]`;
+    args.push("-filter_complex", filterComplex, "-map", "0:v", "-map", "[a]");
+  } else {
+    args.push("-af", voiceChain);
+  }
+  args.push("-movflags", "+faststart", "-threads", "0", clipName);
+  const code = await ff.exec(args);
   if (code !== 0) throw new Error(`fast polish exit ${code}: ${ffmpegLogTail()}`);
 }
 
