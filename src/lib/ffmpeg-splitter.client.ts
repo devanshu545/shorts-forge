@@ -168,7 +168,24 @@ async function recordShortWithBrowser(
     }
     const thumbnailJpg = tctx ? await canvasToJpeg(thumbCanvas, 0.88) : await canvasToJpeg(canvas, 0.88);
 
-    const stream = canvas.captureStream(30);
+    let audioContext: AudioContext | null = null;
+    let stream = canvas.captureStream(30);
+    try {
+      audioContext = new AudioContext();
+      const source = audioContext.createMediaElementSource(video);
+      const destination = audioContext.createMediaStreamDestination();
+      const silentOutput = audioContext.createGain();
+      silentOutput.gain.value = 0;
+      source.connect(destination);
+      source.connect(silentOutput).connect(audioContext.destination);
+      stream = new MediaStream([
+        ...stream.getVideoTracks(),
+        ...destination.stream.getAudioTracks(),
+      ]);
+      await audioContext.resume().catch(() => {});
+    } catch (err) {
+      console.warn("[splitter] audio capture unavailable for browser fallback; continuing video-only", err);
+    }
     const chunks: Blob[] = [];
     const recorder = new MediaRecorder(stream, { mimeType: supported, videoBitsPerSecond: canFullHd ? 3_500_000 : 2_500_000 });
     recorder.ondataavailable = (event) => {
@@ -210,6 +227,12 @@ async function recordShortWithBrowser(
     video.pause();
     URL.revokeObjectURL(url);
   }
+}
+
+function shouldUseBrowserRecorderFirst(file: File, meta: { width: number; height: number }) {
+  const nameLooksUnsupported = /(?:av1|hevc|h\.?265|2160|4k|prores|10bit|hdr)/i.test(file.name);
+  const maxSide = Math.max(meta.width || 0, meta.height || 0);
+  return nameLooksUnsupported || maxSide >= 2160;
 }
 
 function pickWindows(duration: number, clipLen: number, maxClips: number) {
@@ -523,6 +546,69 @@ async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Pr
   return mp4;
 }
 
+async function splitWithBrowserRecorderOnly(
+  file: File,
+  opts: SplitOptions,
+  sourceMeta: { duration: number; width: number; height: number },
+  windows: Array<{ start: number; end: number }>,
+  notify: (patch: Partial<ClipProgress> & Pick<ClipProgress, "stage" | "message">) => void,
+): Promise<ClipResult[]> {
+  const startedAt = Date.now();
+  const results: ClipResult[] = [];
+  const total = windows.length;
+  for (let i = 0; i < windows.length; i++) {
+    assertNotAborted();
+    const w = windows[i];
+    const dur = w.end - w.start;
+    notify({
+      index: i + 1,
+      total,
+      stage: "encoding",
+      percent: Math.round((results.length / Math.max(total, 1)) * 100),
+      clipPercent: 0,
+      etaSeconds: Math.ceil(dur),
+      elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+      fps: null,
+      uploadMBps: null,
+      message: "Using browser 4K/AV1 decoder for this source so it does not hit ffmpeg errors…",
+    });
+    const fallback = await recordShortWithBrowser(file, sourceMeta, w.start, dur, opts.polish, (pct) => {
+      notify({
+        index: i + 1,
+        total,
+        stage: "encoding",
+        percent: Math.round(((results.length + pct / 100) / Math.max(total, 1)) * 100),
+        clipPercent: pct,
+        etaSeconds: pct > 3 ? Math.round((dur / pct) * (100 - pct)) : Math.ceil(dur),
+        elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+        fps: null,
+        uploadMBps: null,
+        message: `Recording verified 9:16 Short with browser decoder (${pct}%)…`,
+      });
+    });
+    const clip: ClipResult = {
+      index: i + 1,
+      startSeconds: w.start,
+      endSeconds: w.end,
+      mp4: fallback.bytes,
+      mimeType: fallback.mimeType,
+      thumbnailJpg: fallback.thumbnailJpg,
+      frames: fallback.frames,
+      needsUpscale: opts.resolution === "4k-smart",
+      title: `Clip ${i + 1} · ${Math.round(w.start)}s–${Math.round(w.end)}s`,
+    };
+    results.push(clip);
+    opts.onClip?.(clip);
+  }
+  notify({
+    stage: "done",
+    percent: 100,
+    clipPercent: 100,
+    message: `Generated ${results.length} browser-decoded 9:16 Short${results.length === 1 ? "" : "s"}.`,
+  });
+  return results;
+}
+
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
   activeAbort = false;
   abortReason = null;
@@ -541,6 +627,11 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const probedDuration = sourceMeta.duration;
   const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
   const canStreamCopyShort = sourceMeta.isShortsVertical;
+  const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
+
+  if (shouldUseBrowserRecorderFirst(file, sourceMeta) && !canStreamCopyShort) {
+    return splitWithBrowserRecorderOnly(file, opts, sourceMeta, windows, notify);
+  }
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
   let ff = await getFFmpeg();
@@ -549,7 +640,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   const inputName = "input.mp4";
   await ff.writeFile(inputName, await fetchFile(file));
 
-  const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
   const total = windows.length;
   const startedAt = Date.now();
   const results: ClipResult[] = [];
