@@ -1,13 +1,26 @@
 // Browser-side long-video splitter using ffmpeg.wasm. Runs entirely in the
 // user's tab — no GitHub Actions, no server worker.
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { fetchFile } from "@ffmpeg/util";
 import type { ClipProgress, ClipResult, SplitOptions } from "./ffmpeg-splitter.types";
 
-const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+const CORE_JS_URL = "/ffmpeg-core/ffmpeg-core.js";
+const WASM_MANIFEST_URL = "/ffmpeg-core/ffmpeg-core.wasm.asset.json";
 
 let ffmpegInstance: FFmpeg | null = null;
 let recentLogs: string[] = [];
+
+function ffmpegLogTail(lines = 14): string {
+  return recentLogs.slice(-lines).join(" | ") || "no ffmpeg log output";
+}
+
+async function getLocalWasmUrl(): Promise<string> {
+  const res = await fetch(WASM_MANIFEST_URL, { cache: "force-cache" });
+  if (!res.ok) throw new Error(`Cannot load ffmpeg wasm manifest (${res.status})`);
+  const manifest = (await res.json()) as { url?: string };
+  if (!manifest.url) throw new Error("ffmpeg wasm manifest is missing its asset URL");
+  return new URL(manifest.url, window.location.origin).href;
+}
 
 async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   if (ffmpegInstance) return ffmpegInstance;
@@ -17,9 +30,13 @@ async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
     if (recentLogs.length > 200) recentLogs.shift();
     if (onLog) onLog(message);
   });
+  const wasmAssetUrl = await getLocalWasmUrl();
+  const coreJsUrl = new URL(CORE_JS_URL, window.location.origin).href;
   await ff.load({
-    coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-    wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+    // Keep the JS loader in this app and the 31MB wasm as a Lovable big asset.
+    // This avoids random CDN/CORS failures like "failed to import ffmpeg-core.js".
+    coreURL: coreJsUrl,
+    wasmURL: wasmAssetUrl,
   });
   ffmpegInstance = ff;
   return ff;
@@ -63,6 +80,48 @@ const TARGETS: Record<"4k" | "1440p" | "1080p", EncodeTarget> = {
   "1080p": { w: 1080, h: 1920, bitrate: "10M", preset: "veryfast", crf: "19" },
 };
 
+async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
+  const buffer = new ArrayBuffer(mp4.byteLength);
+  new Uint8Array(buffer).set(mp4);
+  const blob = new Blob([buffer], { type: "video/mp4" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = url;
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("Could not load generated clip for thumbnail"));
+      setTimeout(() => resolve(), 5000);
+    });
+    const targetTime = Math.min(Math.max((video.duration || 1) * 0.25, 0.15), Math.max((video.duration || 1) - 0.1, 0.15));
+    await new Promise<void>((resolve) => {
+      video.onseeked = () => resolve();
+      video.currentTime = targetTime;
+      setTimeout(() => resolve(), 3000);
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = 720;
+    canvas.height = 1280;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas thumbnail renderer unavailable");
+    ctx.fillStyle = "#05050a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const scale = Math.max(canvas.width / (video.videoWidth || 1), canvas.height / (video.videoHeight || 1));
+    const w = (video.videoWidth || canvas.width) * scale;
+    const h = (video.videoHeight || canvas.height) * scale;
+    ctx.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    const jpg = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Thumbnail canvas export failed"))), "image/jpeg", 0.88),
+    );
+    return new Uint8Array(await jpg.arrayBuffer());
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function encodeClip(
   ff: FFmpeg,
   inputName: string,
@@ -77,7 +136,9 @@ async function encodeClip(
     "fps=30",
   ].join(",");
 
-  const code = await ff.exec([
+  let code: number;
+  try {
+    code = await ff.exec([
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
@@ -94,10 +155,12 @@ async function encodeClip(
     "-b:a", "160k",
     "-movflags", "+faststart",
     clipName,
-  ]);
+    ]);
+  } catch (err) {
+    throw new Error(`ffmpeg crashed @ ${target.w}x${target.h}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
+  }
   if (code !== 0) {
-    const tail = recentLogs.slice(-8).join(" | ");
-    throw new Error(`ffmpeg exit ${code} @ ${target.w}x${target.h}: ${tail}`);
+    throw new Error(`ffmpeg exit ${code} @ ${target.w}x${target.h}: ${ffmpegLogTail()}`);
   }
 }
 
@@ -158,7 +221,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const w = windows[i];
       const dur = w.end - w.start;
       const clipName = `clip${i + 1}.mp4`;
-      const thumbName = `thumb${i + 1}.jpg`;
 
       let usedTarget = preferred;
       try {
@@ -174,18 +236,14 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         await encodeClip(ff, inputName, clipName, w.start, dur, fallback);
       }
 
-      // Thumbnail
-      const mid = (dur / 2).toFixed(2);
-      await ff.exec([
-        "-y", "-ss", mid, "-i", clipName,
-        "-vframes", "1", "-vf", "scale=720:1280", "-q:v", "3",
-        thumbName,
-      ]);
-
-      const mp4Data = await ff.readFile(clipName);
-      const thumbData = await ff.readFile(thumbName);
+      let mp4Data: Awaited<ReturnType<FFmpeg["readFile"]>>;
+      try {
+        mp4Data = await ff.readFile(clipName);
+      } catch (err) {
+        throw new Error(`Generated MP4 could not be read for clip ${i + 1}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
+      }
       const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
-      const thumb = thumbData instanceof Uint8Array ? thumbData : new TextEncoder().encode(String(thumbData));
+      const thumb = await makeThumbnailFromMp4(mp4);
 
       results.push({
         index: i + 1,
@@ -197,7 +255,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       });
 
       try { await ff.deleteFile(clipName); } catch {}
-      try { await ff.deleteFile(thumbName); } catch {}
     }
   } finally {
     ff.off("progress", onProgress);
