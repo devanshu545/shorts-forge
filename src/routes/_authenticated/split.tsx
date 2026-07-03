@@ -368,9 +368,10 @@ function SplitPage() {
                           </div>
                           <OneClickPublishButton
                             video={c}
-                            hint={c.title || "Trending short clip"}
+                            hint={`Short clip from "${(jobs?.find((j) => j.id === selectedId)?.original_filename || "video").replace(/\.[^.]+$/, "")}" — segment ${Math.round(c.clip_start_seconds ?? 0)}s to ${Math.round(c.clip_end_seconds ?? 0)}s. Original clip title: ${c.title || "untitled"}. Generate a viral YouTube Shorts title, description and tags that match the likely content of this segment.`}
                             onUploaded={() => qc.invalidateQueries({ queryKey: ["long-clips", selectedId] })}
                           />
+
                         </div>
                       </motion.div>
                     ))}
