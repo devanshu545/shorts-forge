@@ -482,6 +482,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
         if (opts.polish && !skipFurtherPolish && remainingBudget > 18 && perClipBudget > 8) {
           let timeoutId = 0;
+          const wantsBed = (opts.musicBed ?? "auto") === "auto";
+          const bedFile = wantsBed
+            ? await buildBedForClip(ff, i + 1, `clip ${i + 1}`, w.start, dur)
+            : null;
           try {
             notify({
               index: i + 1, total,
@@ -490,10 +494,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               clipPercent: 0,
               etaSeconds: perClipBudget,
               elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-              message: `Speed-polishing clip ${i + 1} of ${total} from the short file (${perClipBudget}s cap)…`,
+              message: bedFile
+                ? `Polishing clip ${i + 1} of ${total} with a unique phonk bed (${perClipBudget}s cap)…`
+                : `Speed-polishing clip ${i + 1} of ${total} from the short file (${perClipBudget}s cap)…`,
             });
             await Promise.race([
-              encodeFastPolishedClipFromShort(ff, instantName, polishedName, dur),
+              encodeFastPolishedClipFromShort(ff, instantName, polishedName, dur, bedFile),
               new Promise<never>((_, reject) => {
                 const timeoutMs = perClipBudget * 1000;
                 timeoutId = window.setTimeout(() => {
@@ -503,6 +509,11 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               }),
             ]).finally(() => window.clearTimeout(timeoutId));
             mp4 = await readValidMp4(ff, polishedName, i + 1);
+            if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
+          } catch (err) {
+            if (bedFile) { try { await ff.deleteFile(bedFile); } catch { /* noop */ } }
+            throw err;
+          }
           } catch (err) {
             if (abortReason === "Cancelled by user") throw err;
             console.warn("[splitter] polish skipped; instant HD kept", err);
