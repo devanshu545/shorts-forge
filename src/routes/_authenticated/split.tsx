@@ -104,7 +104,7 @@ function SplitPage() {
     contentType: string,
     onProgress?: (loaded: number, total: number, mbps: number) => void,
   ) => {
-    const payload = body instanceof File
+    const blob = body instanceof File
       ? body
       : new Blob([body.slice().buffer as ArrayBuffer], { type: contentType });
     const totalBytes = body instanceof File ? body.size : body.byteLength;
@@ -113,10 +113,12 @@ function SplitPage() {
       const startedAt = Date.now();
       try {
         await new Promise<void>((resolve, reject) => {
+          const payload = new FormData();
+          payload.append("cacheControl", "3600");
+          payload.append("", blob);
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", signedUrl, true);
-          xhr.timeout = 5 * 60 * 1000;
-          xhr.setRequestHeader("Content-Type", contentType);
+          xhr.timeout = 10 * 60 * 1000;
           xhr.setRequestHeader("x-upsert", "true");
           xhr.upload.onprogress = (e) => {
             const loaded = e.lengthComputable ? e.loaded : 0;
@@ -136,6 +138,7 @@ function SplitPage() {
       } catch (err) {
         attempt += 1;
         if (attempt >= 3) throw err;
+        onProgress?.(0, totalBytes, 0);
         await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
       }
     }
