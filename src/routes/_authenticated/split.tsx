@@ -446,7 +446,7 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Fast color/sharpen polish with a 5-minute safety budget. Falls back to instant HD if slow.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Color, sharpen &amp; audio polish. Heavy sources auto-route to the native worker so 4K polish stays fast.</p>
               </div>
               <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
