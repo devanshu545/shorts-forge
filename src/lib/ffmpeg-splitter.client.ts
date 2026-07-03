@@ -1,13 +1,26 @@
 // Browser-side long-video splitter using ffmpeg.wasm. Runs entirely in the
 // user's tab — no GitHub Actions, no server worker.
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { fetchFile } from "@ffmpeg/util";
 import type { ClipProgress, ClipResult, SplitOptions } from "./ffmpeg-splitter.types";
 
-const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+const CORE_JS_URL = "/ffmpeg-core/ffmpeg-core.js";
+const WASM_MANIFEST_URL = "/ffmpeg-core/ffmpeg-core.wasm.asset.json";
 
 let ffmpegInstance: FFmpeg | null = null;
 let recentLogs: string[] = [];
+
+function ffmpegLogTail(lines = 14): string {
+  return recentLogs.slice(-lines).join(" | ") || "no ffmpeg log output";
+}
+
+async function getLocalWasmUrl(): Promise<string> {
+  const res = await fetch(WASM_MANIFEST_URL, { cache: "force-cache" });
+  if (!res.ok) throw new Error(`Cannot load ffmpeg wasm manifest (${res.status})`);
+  const manifest = (await res.json()) as { url?: string };
+  if (!manifest.url) throw new Error("ffmpeg wasm manifest is missing its asset URL");
+  return new URL(manifest.url, window.location.origin).href;
+}
 
 async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   if (ffmpegInstance) return ffmpegInstance;
@@ -17,9 +30,13 @@ async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
     if (recentLogs.length > 200) recentLogs.shift();
     if (onLog) onLog(message);
   });
+  const wasmAssetUrl = await getLocalWasmUrl();
+  const coreJsUrl = new URL(CORE_JS_URL, window.location.origin).href;
   await ff.load({
-    coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-    wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+    // Keep the JS loader in this app and the 31MB wasm as a Lovable big asset.
+    // This avoids random CDN/CORS failures like "failed to import ffmpeg-core.js".
+    coreURL: coreJsUrl,
+    wasmURL: wasmAssetUrl,
   });
   ffmpegInstance = ff;
   return ff;
@@ -44,6 +61,7 @@ function probeDurationFromFile(file: File): Promise<number> {
 
 function pickWindows(duration: number, clipLen: number, maxClips: number) {
   const wins: Array<{ start: number; end: number }> = [];
+  if (!Number.isFinite(duration) || duration <= 0) return [{ start: 0, end: clipLen }];
   const usable = Math.max(0, duration - 1);
   if (usable <= clipLen) return [{ start: 0, end: Math.min(duration, clipLen) }];
   const gap = usable / (maxClips + 1);
@@ -63,6 +81,75 @@ const TARGETS: Record<"4k" | "1440p" | "1080p", EncodeTarget> = {
   "1080p": { w: 1080, h: 1920, bitrate: "10M", preset: "veryfast", crf: "19" },
 };
 
+async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<Uint8Array> {
+  const buffer = new ArrayBuffer(mp4.byteLength);
+  new Uint8Array(buffer).set(mp4);
+  const blob = new Blob([buffer], { type: "video/mp4" });
+  const url = URL.createObjectURL(blob);
+  const fallbackThumbnail = async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 720;
+    canvas.height = 1280;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas thumbnail renderer unavailable");
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, "#05050a");
+    gradient.addColorStop(0.45, "#7c3aed");
+    gradient.addColorStop(1, "#06b6d4");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.font = "bold 64px Inter, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("SHORTS CLIP", canvas.width / 2, canvas.height / 2 - 20);
+    ctx.font = "34px Inter, Arial, sans-serif";
+    ctx.fillText("Ready to publish", canvas.width / 2, canvas.height / 2 + 42);
+    const jpg = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Fallback thumbnail export failed"))), "image/jpeg", 0.9),
+    );
+    return new Uint8Array(await jpg.arrayBuffer());
+  };
+
+  try {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = url;
+    const loaded = await new Promise<boolean>((resolve) => {
+      video.onloadedmetadata = () => resolve(true);
+      video.onerror = () => resolve(false);
+      setTimeout(() => resolve(Boolean(video.videoWidth)), 5000);
+    });
+    if (!loaded || !video.videoWidth) return await fallbackThumbnail();
+    const targetTime = Math.min(Math.max((video.duration || 1) * 0.25, 0.15), Math.max((video.duration || 1) - 0.1, 0.15));
+    await new Promise<void>((resolve) => {
+      video.onseeked = () => resolve();
+      video.currentTime = targetTime;
+      setTimeout(() => resolve(), 3000);
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = 720;
+    canvas.height = 1280;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas thumbnail renderer unavailable");
+    ctx.fillStyle = "#05050a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const scale = Math.max(canvas.width / (video.videoWidth || 1), canvas.height / (video.videoHeight || 1));
+    const w = (video.videoWidth || canvas.width) * scale;
+    const h = (video.videoHeight || canvas.height) * scale;
+    ctx.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    const jpg = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Thumbnail canvas export failed"))), "image/jpeg", 0.88),
+    );
+    return new Uint8Array(await jpg.arrayBuffer());
+  } catch {
+    return await fallbackThumbnail();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function encodeClip(
   ff: FFmpeg,
   inputName: string,
@@ -77,7 +164,9 @@ async function encodeClip(
     "fps=30",
   ].join(",");
 
-  const code = await ff.exec([
+  let code: number;
+  try {
+    code = await ff.exec([
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
@@ -94,11 +183,29 @@ async function encodeClip(
     "-b:a", "160k",
     "-movflags", "+faststart",
     clipName,
-  ]);
-  if (code !== 0) {
-    const tail = recentLogs.slice(-8).join(" | ");
-    throw new Error(`ffmpeg exit ${code} @ ${target.w}x${target.h}: ${tail}`);
+    ]);
+  } catch (err) {
+    throw new Error(`ffmpeg crashed @ ${target.w}x${target.h}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
   }
+  if (code !== 0) {
+    throw new Error(`ffmpeg exit ${code} @ ${target.w}x${target.h}: ${ffmpegLogTail()}`);
+  }
+}
+
+async function readValidMp4(ff: FFmpeg, clipName: string, clipIndex: number): Promise<Uint8Array> {
+  let mp4Data: Awaited<ReturnType<FFmpeg["readFile"]>>;
+  try {
+    mp4Data = await ff.readFile(clipName);
+  } catch (err) {
+    throw new Error(`Generated MP4 could not be read for clip ${clipIndex}: ${err instanceof Error ? err.message : String(err)} · ${ffmpegLogTail()}`);
+  }
+  const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
+  // Empty ffmpeg outputs can still be tiny MP4 containers (~260 bytes) with exit code 0.
+  // Treat those as failed so we retry from a safe start instead of showing a fake clip.
+  if (mp4.byteLength < 50_000) {
+    throw new Error(`Generated clip ${clipIndex} is empty (${mp4.byteLength} bytes). ${ffmpegLogTail()}`);
+  }
+  return mp4;
 }
 
 export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promise<ClipResult[]> {
@@ -119,7 +226,10 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
   };
 
   notify({ stage: "probing", message: "Reading video metadata…" });
-  const duration = (await probeDurationFromFile(file)) || 60;
+  const probedDuration = await probeDurationFromFile(file);
+  // If browser metadata probing fails, never assume 60s: that caused invalid
+  // start times on short uploads and produced 261-byte empty MP4s.
+  const duration = probedDuration > 0 ? probedDuration : opts.clipLength;
 
   notify({ stage: "loading-ffmpeg", message: "Loading ffmpeg engine (first time only, ~30MB)…" });
   const ff = await getFFmpeg();
@@ -158,11 +268,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const w = windows[i];
       const dur = w.end - w.start;
       const clipName = `clip${i + 1}.mp4`;
-      const thumbName = `thumb${i + 1}.jpg`;
 
       let usedTarget = preferred;
+      let mp4: Uint8Array | null = null;
       try {
         await encodeClip(ff, inputName, clipName, w.start, dur, preferred);
+        mp4 = await readValidMp4(ff, clipName, i + 1);
       } catch (err) {
         console.warn("[splitter] preferred target failed, retrying at fallback", err);
         notify({
@@ -171,21 +282,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           message: `${preferred.w}p failed for clip ${i + 1}, retrying at ${fallback.w}×${fallback.h}…`,
         });
         usedTarget = fallback;
+        try { await ff.deleteFile(clipName); } catch {}
         await encodeClip(ff, inputName, clipName, w.start, dur, fallback);
+        mp4 = await readValidMp4(ff, clipName, i + 1);
       }
-
-      // Thumbnail
-      const mid = (dur / 2).toFixed(2);
-      await ff.exec([
-        "-y", "-ss", mid, "-i", clipName,
-        "-vframes", "1", "-vf", "scale=720:1280", "-q:v", "3",
-        thumbName,
-      ]);
-
-      const mp4Data = await ff.readFile(clipName);
-      const thumbData = await ff.readFile(thumbName);
-      const mp4 = mp4Data instanceof Uint8Array ? mp4Data : new TextEncoder().encode(String(mp4Data));
-      const thumb = thumbData instanceof Uint8Array ? thumbData : new TextEncoder().encode(String(thumbData));
+      if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
+      const thumb = await makeThumbnailFromMp4(mp4);
 
       results.push({
         index: i + 1,
@@ -197,7 +299,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       });
 
       try { await ff.deleteFile(clipName); } catch {}
-      try { await ff.deleteFile(thumbName); } catch {}
     }
   } finally {
     ff.off("progress", onProgress);

@@ -14,6 +14,7 @@
   "dependencies": {
     "@ai-sdk/gateway": "^4.0.4",
     "@ai-sdk/openai-compatible": "^3.0.2",
+    "@ffmpeg/core": "0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@fontsource/inter": "^5.2.8",
