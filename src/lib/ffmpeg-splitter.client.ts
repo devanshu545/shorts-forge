@@ -562,7 +562,17 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             message: `Source codec needs conversion. Using ultrafast MP4 compatibility encode for clip ${i + 1}…`,
           });
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
-          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+          try {
+            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+          } catch (compatErr) {
+            if (abortReason === "Cancelled by user") throw compatErr;
+            console.warn("[splitter] 720p compatibility encode failed, retrying tiny safe encode", compatErr);
+            activeAbort = false;
+            abortReason = null;
+            ff = await getFFmpeg();
+            await ff.writeFile(inputName, await fetchFile(file));
+            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
+          }
         }
         mp4 = await readValidMp4(ff, instantName, i + 1);
 
@@ -637,7 +647,16 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
         } catch {
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
-          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+          try {
+            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
+          } catch (compatErr) {
+            if (abortReason === "Cancelled by user") throw compatErr;
+            activeAbort = false;
+            abortReason = null;
+            ff = await getFFmpeg();
+            await ff.writeFile(inputName, await fetchFile(file));
+            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
+          }
         }
         mp4 = await readValidMp4(ff, instantName, i + 1);
       }
