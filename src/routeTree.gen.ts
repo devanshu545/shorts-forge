@@ -13,6 +13,7 @@ import { Route as UnlockRouteImport } from './routes/unlock'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedSplitRouteImport } from './routes/_authenticated/split'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedScheduleRouteImport } from './routes/_authenticated/schedule'
 import { Route as AuthenticatedLibraryRouteImport } from './routes/_authenticated/library'
@@ -48,6 +49,11 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedSplitRoute = AuthenticatedSplitRouteImport.update({
+  id: '/split',
+  path: '/split',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedSettingsRoute = AuthenticatedSettingsRouteImport.update({
   id: '/settings',
@@ -147,6 +153,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/split': typeof AuthenticatedSplitRoute
   '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
@@ -168,6 +175,7 @@ export interface FileRoutesByTo {
   '/library': typeof AuthenticatedLibraryRoute
   '/schedule': typeof AuthenticatedScheduleRoute
   '/settings': typeof AuthenticatedSettingsRoute
+  '/split': typeof AuthenticatedSplitRoute
   '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
@@ -191,6 +199,7 @@ export interface FileRoutesById {
   '/_authenticated/library': typeof AuthenticatedLibraryRoute
   '/_authenticated/schedule': typeof AuthenticatedScheduleRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
+  '/_authenticated/split': typeof AuthenticatedSplitRoute
   '/api/public/autopilot/heartbeat': typeof ApiPublicAutopilotHeartbeatRoute
   '/api/public/autopilot/run-workflow': typeof ApiPublicAutopilotRunWorkflowRoute
   '/api/public/autopilot/tick': typeof ApiPublicAutopilotTickRoute
@@ -214,6 +223,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/split'
     | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
@@ -235,6 +245,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/schedule'
     | '/settings'
+    | '/split'
     | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
@@ -257,6 +268,7 @@ export interface FileRouteTypes {
     | '/_authenticated/library'
     | '/_authenticated/schedule'
     | '/_authenticated/settings'
+    | '/_authenticated/split'
     | '/api/public/autopilot/heartbeat'
     | '/api/public/autopilot/run-workflow'
     | '/api/public/autopilot/tick'
@@ -313,6 +325,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/split': {
+      id: '/_authenticated/split'
+      path: '/split'
+      fullPath: '/split'
+      preLoaderRoute: typeof AuthenticatedSplitRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/settings': {
       id: '/_authenticated/settings'
@@ -437,6 +456,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedLibraryRoute: typeof AuthenticatedLibraryRoute
   AuthenticatedScheduleRoute: typeof AuthenticatedScheduleRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
+  AuthenticatedSplitRoute: typeof AuthenticatedSplitRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -447,6 +467,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedLibraryRoute: AuthenticatedLibraryRoute,
   AuthenticatedScheduleRoute: AuthenticatedScheduleRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
+  AuthenticatedSplitRoute: AuthenticatedSplitRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
