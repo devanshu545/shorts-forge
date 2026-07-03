@@ -54,7 +54,7 @@ async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetMs: numbe
   let timeoutId = 0;
   try {
     return await Promise.race([
-      ff.exec(args, Math.max(5, Math.ceil(budgetMs / 1000))),
+      ff.exec(args, Math.max(5_000, budgetMs)),
       new Promise<number>((_, reject) => {
         timeoutId = window.setTimeout(() => {
           try { ff.terminate(); } catch { /* noop */ }
