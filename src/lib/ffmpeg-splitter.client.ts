@@ -3,6 +3,38 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 import type { ClipProgress, ClipResult, SplitOptions } from "./ffmpeg-splitter.types";
+import { generatePhonkBed, pickMoodFromTitle, seedFor } from "./audio/phonk-bed";
+
+// Kill-switch: flip to false to instantly disable music bed if a regression appears.
+const ENABLE_MUSIC_BED = true;
+
+async function buildBedForClip(
+  ff: FFmpeg,
+  clipIndex: number,
+  aiTitle: string,
+  startSeconds: number,
+  durSec: number,
+): Promise<string | null> {
+  if (!ENABLE_MUSIC_BED) return null;
+  try {
+    const seed = seedFor(clipIndex, aiTitle, startSeconds);
+    const mood = pickMoodFromTitle(aiTitle);
+    const started = Date.now();
+    const wav = await Promise.race([
+      generatePhonkBed({ seconds: Math.max(3, Math.ceil(durSec)), seed, mood }),
+      new Promise<Uint8Array>((_, reject) =>
+        window.setTimeout(() => reject(new Error("bed gen timeout")), 3500),
+      ),
+    ]);
+    if (Date.now() - started > 3500) return null;
+    const name = `bed_${clipIndex}.wav`;
+    await ff.writeFile(name, wav);
+    return name;
+  } catch (err) {
+    console.warn("[splitter] music bed generation skipped for clip", clipIndex, err);
+    return null;
+  }
+}
 
 const CORE_JS_URL = "/ffmpeg-core/ffmpeg-core.js";
 const WASM_MANIFEST_URL = "/ffmpeg-core/ffmpeg-core.wasm.asset.json";
