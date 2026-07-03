@@ -1,7 +1,7 @@
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_AUDIENCE = "shortforge-autopilot";
 const DEFAULT_GITHUB_REPOSITORY = "devanshu545/shorts-forge";
-const WORKFLOW_FILE = ".github/workflows/autopilot.yml";
+const WORKFLOW_FILES = [".github/workflows/autopilot.yml", ".github/workflows/splitter.yml"];
 
 type GithubJwk = JsonWebKey & { kid?: string; alg?: string };
 type GithubJwks = { keys?: GithubJwk[] };
@@ -65,7 +65,8 @@ async function verifyGithubOidcToken(token: string): Promise<boolean> {
   if (!claims.exp || claims.exp < now - 30) return false;
   if (claims.nbf && claims.nbf > now + 30) return false;
   if ((claims.repository || "").toLowerCase() !== repo) return false;
-  if (!claims.workflow_ref?.toLowerCase().startsWith(`${repo}/${WORKFLOW_FILE}@`)) return false;
+  const wref = (claims.workflow_ref || "").toLowerCase();
+  if (!WORKFLOW_FILES.some((f) => wref.startsWith(`${repo}/${f}@`))) return false;
 
   const jwk = (await getGithubJwks()).find((key) => key.kid === header.kid);
   if (!jwk) return false;
