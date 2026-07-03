@@ -33,6 +33,8 @@ function LibraryPage() {
   const [sort, setSort] = useState("date" as "date" | "duration" | "title");
   const [selected, setSelected] = useState<Video | null>(null);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkPicked, setBulkPicked] = useState<Record<string, boolean>>({});
 
   const { data: videos, refetch, isLoading } = useQuery({
     queryKey: ["videos"],
