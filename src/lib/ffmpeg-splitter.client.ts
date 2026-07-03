@@ -263,7 +263,7 @@ async function encodeCompatibilityClip(
     "-t", durSec.toFixed(2),
     "-map", "0:v:0",
     "-map", "0:a?",
-    "-vf", "scale=1080:1920:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=1080:1920",
+    "-vf", verticalCenterGraph(1080, 1920),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
