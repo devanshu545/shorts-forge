@@ -13,7 +13,12 @@ let activeAbort = false;
 let abortReason: string | null = null;
 
 function ffmpegLogTail(lines = 14): string {
-  return recentLogs.slice(-lines).join(" | ") || "no ffmpeg log output";
+  const compact = recentLogs
+    .slice(-lines)
+    .map((line) => line.replace(/Last message repeated \d+ times?/gi, "repeated decoder message"))
+    .filter((line, index, arr) => line && line !== arr[index - 1]);
+  const text = compact.join(" | ") || "no ffmpeg log output";
+  return text.length > 900 ? `${text.slice(0, 900)}…` : text;
 }
 
 async function getLocalWasmUrl(): Promise<string> {
@@ -152,6 +157,23 @@ function terminateActive(reason: string) {
   ffmpegInstance = null;
 }
 
+async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetSec: number, label: string) {
+  let timeoutId = 0;
+  try {
+    return await Promise.race([
+      ff.exec(args),
+      new Promise<number>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          terminateActive(`${label} exceeded its safe time budget; keeping the fastest working Shorts path`);
+          reject(new Error(abortReason || `${label} timed out`));
+        }, Math.max(5, budgetSec) * 1000);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<{ jpg: Uint8Array; frames: string[] }> {
   const buffer = new ArrayBuffer(mp4.byteLength);
   new Uint8Array(buffer).set(mp4);
@@ -285,14 +307,16 @@ async function encodeCompatibilityClip(
   startSec: number,
   durSec: number,
 ) {
-  const code = await ff.exec([
+  const code = await execWithBrowserBudget(ff, [
     "-y",
+    "-fflags", "+genpts+igndts+discardcorrupt",
+    "-err_detect", "ignore_err",
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
     "-map", "0:v:0",
     "-map", "0:a?",
-    "-vf", verticalCenterGraph(1080, 1920),
+    "-vf", verticalCenterGraph(720, 1280, 18),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -305,7 +329,7 @@ async function encodeCompatibilityClip(
     "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ]);
+  ], Math.min(90, Math.max(35, durSec * 1.8)), `Shorts compatibility encode for clip ${clipName}`);
   if (code !== 0) throw new Error(`compat encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -318,11 +342,13 @@ async function encodeShortsSafeClipFromBytes(
   const inName = `${clipName.replace(/\.mp4$/i, "")}_in.mp4`;
   await ff.writeFile(inName, new Uint8Array(mp4));
   try {
-    const code = await ff.exec([
+    const code = await execWithBrowserBudget(ff, [
       "-y",
+      "-fflags", "+genpts+igndts+discardcorrupt",
+      "-err_detect", "ignore_err",
       "-i", inName,
       "-t", Math.min(durSec, 60).toFixed(2),
-      "-vf", verticalCenterGraph(1080, 1920),
+      "-vf", verticalCenterGraph(720, 1280, 18),
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-tune", "zerolatency",
@@ -335,18 +361,29 @@ async function encodeShortsSafeClipFromBytes(
       "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       clipName,
-    ]);
+    ], Math.min(90, Math.max(35, durSec * 1.8)), `Shorts-safe encode for ${clipName}`);
     if (code !== 0) throw new Error(`shorts-safe encode exit ${code}: ${ffmpegLogTail()}`);
   } finally {
     try { await ff.deleteFile(inName); } catch { /* noop */ }
   }
 }
 
-async function ensureVerticalShortMp4(ff: FFmpeg, mp4: Uint8Array, clipName: string, durSec: number, clipIndex: number) {
+async function ensureVerticalShortMp4(
+  ff: FFmpeg,
+  mp4: Uint8Array,
+  clipName: string,
+  durSec: number,
+  clipIndex: number,
+  source?: { inputName: string; startSec: number },
+) {
   const meta = await probeMp4Meta(mp4).catch(() => null);
   if (meta?.duration && meta.duration > 60.5) throw new Error(`Clip ${clipIndex} is ${Math.round(meta.duration)}s; YouTube Shorts must be 60s or less.`);
   if (meta && isVerticalShortMeta(meta)) return mp4;
-  await encodeShortsSafeClipFromBytes(ff, mp4, clipName, durSec);
+  if (source) {
+    await encodeCompatibilityClip(ff, source.inputName, clipName, source.startSec, durSec);
+  } else {
+    await encodeShortsSafeClipFromBytes(ff, mp4, clipName, durSec);
+  }
   const safe = await readValidMp4(ff, clipName, clipIndex);
   const safeMeta = await probeMp4Meta(safe);
   if (!isVerticalShortMeta(safeMeta)) throw new Error(`Clip ${clipIndex} is still not vertical 9:16 after conversion; upload stopped.`);
@@ -372,8 +409,10 @@ async function encodeFastPolishedClipFromShort(
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
   const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
-  const code = await ff.exec([
+    const code = await execWithBrowserBudget(ff, [
     "-y",
+      "-fflags", "+genpts+igndts+discardcorrupt",
+      "-err_detect", "ignore_err",
     "-i", inputClipName,
     "-vf", vf,
     "-c:v", "libx264",
@@ -389,7 +428,7 @@ async function encodeFastPolishedClipFromShort(
     "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ]);
+  ], Math.min(60, Math.max(12, durSec * 1.2)), `Fast polish for ${clipName}`);
   if (code !== 0) throw new Error(`fast polish exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -600,7 +639,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
-      mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1);
+      mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1, { inputName, startSec: w.start });
 
       const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
