@@ -42,7 +42,30 @@ async function getFFmpeg(): Promise<FFmpeg> {
 }
 
 function logTail(lines = 10) {
-  return logs.slice(-lines).join(" | ") || "no ffmpeg log output";
+  const compact = logs
+    .slice(-lines)
+    .map((line) => line.replace(/Last message repeated \d+ times?/gi, "repeated decoder message"))
+    .filter((line, index, arr) => line && line !== arr[index - 1]);
+  const text = compact.join(" | ") || "no ffmpeg log output";
+  return text.length > 700 ? `${text.slice(0, 700)}…` : text;
+}
+
+async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetMs: number, label: string) {
+  let timeoutId = 0;
+  try {
+    return await Promise.race([
+     VILLE ff.exec(args),
+      new Promise<number>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          try { ff.terminate(); } catch { /* noop */ }
+          instance = null;
+          reject(new Error(`${label} took too long in this browser, so upload was stopped before it could get stuck.`));
+        }, budgetMs);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function readBlobMeta(blob: Blob): Promise<VideoMeta> {
@@ -99,7 +122,7 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
 
   const targetW = target === "4k" ? 2160 : 1080;
   const targetH = target === "4k" ? 3840 : 1920;
-  if (isShortsShape(meta) && meta.width === targetW && meta.height === targetH) {
+  if (isShortsShape(meta)) {
     return { bytes, durationSeconds: meta.duration, changed: false };
   }
 
@@ -109,8 +132,10 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
   const outName = `shorts-out-${nonce}.mp4`;
   await ff.writeFile(inName, new Uint8Array(bytes));
   try {
-    const code = await ff.exec([
+    const code = await execWithBrowserBudget(ff, [
       "-y",
+      "-fflags", "+genpts+igndts+discardcorrupt",
+      "-err_detect", "ignore_err",
       "-i", inName,
       "-t", Math.min(meta.duration || 60, 60).toFixed(2),
       "-vf", verticalBlurFilter(targetW, targetH, 30),
@@ -126,7 +151,7 @@ export async function prepareShortsSafeMp4(bytes: Uint8Array, target: "hd" | "4k
       "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
-    ]);
+    ], target === "4k" ? 120_000 : 55_000, "Shorts-safe conversion");
     if (code !== 0) throw new Error(`Shorts-safe encode failed (${code}): ${logTail()}`);
     const out = await ff.readFile(outName);
     const safe = out instanceof Uint8Array ? new Uint8Array(out) : new TextEncoder().encode(String(out));
