@@ -132,7 +132,7 @@ function SplitPage() {
   const startUpload = async () => {
     if (!file) return;
     setBusy(true);
-    setUploadPct(2);
+    setUploadPct(1);
     let longVideoId: string | null = null;
     try {
       const info = await createFn({ data: {
@@ -142,16 +142,35 @@ function SplitPage() {
         maxClips,
       } });
       longVideoId = info.longVideoId;
-      setUploadPct(15);
-      const up = await supabase.storage
-        .from("videos")
-        .uploadToSignedUrl(info.path, info.token, file, { contentType: file.type || "video/mp4" });
-      if (up.error) throw new Error(up.error.message);
-      setUploadPct(100);
-      await queueFn({ data: { longVideoId: info.longVideoId } });
-      qc.invalidateQueries({ queryKey: ["long-videos"] });
       setSelectedId(info.longVideoId);
+      qc.invalidateQueries({ queryKey: ["long-videos"] });
 
+      // Upload source in the BACKGROUND with real progress via XHR PUT to the signed URL.
+      // Do NOT block splitting on this — the splitter reads the local File directly.
+      const uploadPromise: Promise<void> = new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", info.signedUrl, true);
+        xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+        xhr.setRequestHeader("x-upsert", "true");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.max(1, Math.min(99, Math.round((e.loaded / e.total) * 100)));
+            setUploadPct(pct);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) setUploadPct(100);
+          else console.warn("[source-upload] failed", xhr.status, xhr.responseText);
+          resolve();
+        };
+        xhr.onerror = () => { console.warn("[source-upload] network error"); resolve(); };
+        xhr.send(file);
+      });
+
+      // Kick backend queue marker in parallel; don't wait.
+      queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
+
+      // Start splitting IMMEDIATELY from the local File — no need to wait for upload.
       const results = await runBrowserSplitter(file, {
         clipLength,
         maxClips,
@@ -159,6 +178,10 @@ function SplitPage() {
         polish,
         onProgress: setProgress,
       });
+
+      // Let background upload finish quietly, but never block the UI on it.
+      uploadPromise.catch(() => {});
+
 
       const { data: userData } = await supabase.auth.getUser();
       const userId = userData.user?.id;
