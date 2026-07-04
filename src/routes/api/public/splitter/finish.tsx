@@ -18,11 +18,12 @@ async function handler(request: Request): Promise<Response> {
   const { data: row } = await supabaseAdmin
     .from("long_videos").select("user_id,original_filename,clips_generated").eq("id", body.longVideoId).maybeSingle();
 
-  await supabaseAdmin.from("long_videos").update({
+  const patch: Record<string, unknown> = {
     status: body.status,
     error_message: body.errorMessage ?? null,
-    duration_seconds: body.durationSeconds ?? null,
-  } as never).eq("id", body.longVideoId);
+  };
+  if (body.durationSeconds) patch.duration_seconds = body.durationSeconds;
+  await supabaseAdmin.from("long_videos").update(patch as never).eq("id", body.longVideoId);
 
   if (row?.user_id) {
     await supabaseAdmin.from("notifications").insert({

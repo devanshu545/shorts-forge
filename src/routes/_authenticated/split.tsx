@@ -193,6 +193,7 @@ function SplitPage() {
     setUploadPct(1);
     let longVideoId: string | null = null;
     let sourceUploaded = false;
+    let uploadPromise: Promise<void> | null = null;
     const nativePreferred = file.size > 160 * 1024 * 1024 || /(?:2160|4k|uhd)/i.test(file.name);
     try {
       const info = await createFn({ data: {
@@ -205,7 +206,7 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
-      const uploadPromise = (backupSource || nativePreferred)
+      uploadPromise = (backupSource || nativePreferred)
         ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
             const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
             setUploadPct(pct);
@@ -332,6 +333,9 @@ function SplitPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
       toast.error(msg);
+      if (longVideoId && uploadPromise && !sourceUploaded) {
+        try { await uploadPromise; } catch { /* source backup unavailable */ }
+      }
       if (longVideoId && sourceUploaded) {
         try {
           await queueNativeFn({ data: { longVideoId } });
