@@ -223,7 +223,7 @@ function SplitPage() {
         qc.invalidateQueries({ queryKey: ["long-videos"] });
         setProgress({
           index: 0, total: maxClips, stage: "done", percent: 100, clipPercent: 100,
-          etaSeconds: 0, elapsedSeconds: null, fps: null, uploadMBps: null, updatedAt: Date.now(),
+          etaSeconds: 0, elapsedSeconds: undefined, fps: null, uploadMBps: null, updatedAt: Date.now(),
           message: queued.dispatchOk
             ? "Native cinematic splitter started. Clips will appear here automatically as the worker uploads them."
             : "Native cinematic splitter queued. The scheduled worker will retry automatically.",
