@@ -565,8 +565,9 @@ function SplitPage() {
                       const dbProgress = c.generation_progress ?? 0;
                       const isNative4k = dbStage.toLowerCase().includes("4k");
                       const db4kFailed = dbStage.toLowerCase().includes("4k failed");
+                      const db4kQueued = dbStage.toLowerCase().includes("4k upgrade queued");
                       const upscaleState = meta?.upscale || (isNative4k
-                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : "running" as const, pct: dbProgress }
+                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : db4kQueued ? "queued" as const : "running" as const, pct: dbProgress }
                         : undefined);
                       return (
                         <motion.div

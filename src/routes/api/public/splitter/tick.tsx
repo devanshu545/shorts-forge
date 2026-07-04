@@ -17,7 +17,7 @@ async function handler(request: Request): Promise<Response> {
   let q = supabaseAdmin
     .from("long_videos")
     .select("id,user_id,source_path,clip_length,max_clips,status")
-    .in("status", ["queued"])
+    .or(`status.eq.queued,and(status.eq.processing,updated_at.lt.${new Date(Date.now() - 12 * 60 * 1000).toISOString()})`)
     .order("created_at", { ascending: true })
     .limit(1);
   if (explicitId) q = supabaseAdmin

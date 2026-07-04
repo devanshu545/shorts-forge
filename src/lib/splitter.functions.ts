@@ -55,7 +55,7 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("long_videos")
-      .update({ status: "processing", error_message: null } as never)
+      .update({ status: "queued", error_message: null } as never)
       .eq("id", data.longVideoId)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
@@ -156,12 +156,6 @@ export const queueClip4KUpgrade = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     if (!clip?.video_storage_path) throw new Error("Clip not found or missing storage path");
 
-    await supabaseAdmin
-      .from("videos")
-      .update({ generation_stage: "Native 4K upgrade queued", generation_progress: 5 } as never)
-      .eq("id", data.clipId)
-      .eq("user_id", context.userId);
-
     const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
     const dispatch = await triggerSplitterWorkflow({ clipId: data.clipId });
     if (!dispatch.ok) {
@@ -172,6 +166,11 @@ export const queueClip4KUpgrade = createServerFn({ method: "POST" })
         .eq("user_id", context.userId);
       throw new Error(dispatch.message);
     }
+    await supabaseAdmin
+      .from("videos")
+      .update({ generation_stage: "Native 4K upgrade queued", generation_progress: 5 } as never)
+      .eq("id", data.clipId)
+      .eq("user_id", context.userId);
     return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null };
   });
 
