@@ -159,14 +159,15 @@ function terminateActive(reason: string) {
 
 async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetSec: number, label: string) {
   let timeoutId = 0;
+  const budgetMs = Math.max(5, budgetSec) * 1000;
   try {
     return await Promise.race([
-      ff.exec(args, Math.max(5, budgetSec) * 1000),
+      ff.exec(args, budgetMs + 2_000),
       new Promise<number>((_, reject) => {
         timeoutId = window.setTimeout(() => {
           terminateActive(`${label} exceeded its safe time budget; keeping the fastest working Shorts path`);
           reject(new Error(abortReason || `${label} timed out`));
-        }, Math.max(5, budgetSec) * 1000);
+        }, budgetMs);
       }),
     ]);
   } finally {
@@ -329,7 +330,7 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ], Math.min(90, Math.max(35, durSec * (width >= 720 ? 1.8 : 1.15))), `Shorts compatibility encode for clip ${clipName}`);
@@ -428,7 +429,7 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ], Math.min(60, Math.max(12, durSec * 1.2)), `Fast polish for ${clipName}`);
@@ -445,7 +446,7 @@ async function encodePolishedClip(
   durSec: number,
 ) {
   const vf = polishFilter(durSec, 1080, 1920);
-  const code = await ff.exec([
+  const code = await execWithBrowserBudget(ff, [
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
@@ -461,10 +462,10 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
-  ]);
+  ], Math.min(120, Math.max(25, durSec * 1.8)), `Polish encode for ${clipName}`);
   if (code !== 0) throw new Error(`polish encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -500,7 +501,8 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
   notify({ stage: "reading-file", message: `Loading ${(file.size / 1024 / 1024).toFixed(1)}MB into ffmpeg…` });
   const inputName = "input.mp4";
-  await ff.writeFile(inputName, await fetchFile(file));
+  const inputBytes = await fetchFile(file);
+  await ff.writeFile(inputName, inputBytes);
 
   const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
   const total = windows.length;
@@ -570,7 +572,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             activeAbort = false;
             abortReason = null;
             ff = await getFFmpeg();
-            await ff.writeFile(inputName, await fetchFile(file));
+            await ff.writeFile(inputName, inputBytes);
             await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
           }
         }
@@ -616,7 +618,12 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               activeAbort = false;
               abortReason = null;
               ff = await getFFmpeg();
-              await ff.writeFile(inputName, await fetchFile(file));
+              await ff.writeFile(inputName, inputBytes);
+            } else {
+              ffmpegInstance = null;
+              try { ff.terminate(); } catch { /* noop */ }
+              ff = await getFFmpeg();
+              await ff.writeFile(inputName, inputBytes);
             }
           }
         } else {
@@ -641,7 +648,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           activeAbort = false;
           abortReason = null;
           ff = await getFFmpeg();
-          await ff.writeFile(inputName, await fetchFile(file));
+          await ff.writeFile(inputName, inputBytes);
         }
         try {
           await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
@@ -654,7 +661,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             activeAbort = false;
             abortReason = null;
             ff = await getFFmpeg();
-            await ff.writeFile(inputName, await fetchFile(file));
+            await ff.writeFile(inputName, inputBytes);
             await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
           }
         }
@@ -669,7 +676,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
         activeAbort = false;
         abortReason = null;
         ff = await getFFmpeg();
-        await ff.writeFile(inputName, await fetchFile(file));
+        await ff.writeFile(inputName, inputBytes);
         await encodeCompatibilityClip(ff, inputName, shortsName, w.start, dur, 360, 640, 10);
         mp4 = await readValidMp4(ff, shortsName, i + 1);
         const tinyMeta = await probeMp4Meta(mp4);
@@ -740,7 +747,7 @@ export async function upscaleClipTo4K(
       verticalCenterGraph(2160, 3840),
       "unsharp=5:5:1.0:5:5:0.0",
     ].join(",");
-    const code = await ff.exec([
+    const code = await execWithBrowserBudget(ff, [
       "-y",
       "-i", inName,
       "-vf", vf,
@@ -753,10 +760,10 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-      "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
-    ]);
+    ], maxSeconds, "4K upgrade");
     if (code !== 0) throw new Error(`4K upscale exit ${code}: ${ffmpegLogTail()}`);
     assertNotAborted();
 

@@ -18,6 +18,7 @@ import {
   createClipUploadUrls,
   queueClip4KUpgrade,
   markLongVideoQueued,
+  queueLongVideoNative,
   listLongVideos,
   listClipsForLongVideo,
   deleteLongVideo,
@@ -53,6 +54,7 @@ function SplitPage() {
   const createFn = useServerFn(createLongVideoUploadUrl);
   const clipUrlFn = useServerFn(createClipUploadUrls);
   const queueFn = useServerFn(markLongVideoQueued);
+  const queueNativeFn = useServerFn(queueLongVideoNative);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
   const deleteFn = useServerFn(deleteLongVideo);
@@ -65,7 +67,7 @@ function SplitPage() {
   const [maxClips, setMaxClips] = useState(5);
   const [smart4k, setSmart4k] = useState(false);
   const [polish, setPolish] = useState(true);
-  const [backupSource, setBackupSource] = useState(false);
+  const [backupSource, setBackupSource] = useState(true);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [progress, setProgress] = useState<ClipProgressData | null>(null);
@@ -190,6 +192,9 @@ function SplitPage() {
     setBusy(true);
     setUploadPct(1);
     let longVideoId: string | null = null;
+    let sourceUploaded = false;
+    let uploadPromise: Promise<void> | null = null;
+    const nativePreferred = file.size > 160 * 1024 * 1024 || /(?:2160|4k|uhd)/i.test(file.name);
     try {
       const info = await createFn({ data: {
         filename: file.name,
@@ -201,12 +206,33 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
-      const uploadPromise = backupSource
+      uploadPromise = (backupSource || nativePreferred)
         ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
             const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
             setUploadPct(pct);
-          }).then(() => setUploadPct(100)).catch((err) => console.warn("[source-upload] failed", err))
+          }).then(() => { sourceUploaded = true; setUploadPct(100); }).catch((err) => { console.warn("[source-upload] failed", err); throw err; })
         : Promise.resolve();
+
+      if (nativePreferred) {
+        setProgress({
+          index: 0, total: maxClips, stage: "uploading", percent: 2, clipPercent: 0,
+          etaSeconds: null, elapsedSeconds: 0, fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: "Large/4K source detected. Uploading once, then the native cinematic splitter will render it safely.",
+        });
+        await uploadPromise;
+        const queued = await queueNativeFn({ data: { longVideoId: info.longVideoId } });
+        qc.invalidateQueries({ queryKey: ["long-videos"] });
+        setProgress({
+          index: 0, total: maxClips, stage: "done", percent: 100, clipPercent: 100,
+          etaSeconds: 0, elapsedSeconds: undefined, fps: null, uploadMBps: null, updatedAt: Date.now(),
+          message: queued.dispatchOk
+            ? "Native cinematic splitter started. Clips will appear here automatically as the worker uploads them."
+            : "Native cinematic splitter queued. The scheduled worker will retry automatically.",
+        });
+        toast.success("Native cinematic splitter queued for this 4K/large file");
+        setFile(null);
+        return;
+      }
 
       // Kick backend queue marker in parallel; don't wait.
       queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
@@ -307,6 +333,24 @@ function SplitPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
       toast.error(msg);
+      if (longVideoId && uploadPromise && !sourceUploaded) {
+        try { await uploadPromise; } catch { /* source backup unavailable */ }
+      }
+      if (longVideoId && sourceUploaded) {
+        try {
+          await queueNativeFn({ data: { longVideoId } });
+          qc.invalidateQueries({ queryKey: ["long-videos"] });
+          setProgress((p) => p ? {
+            ...p,
+            stage: "done",
+            percent: 100,
+            clipPercent: 100,
+            message: "Browser render hit a limit, so the source was moved to the native cinematic splitter automatically.",
+          } : null);
+          toast.info("Moved to native splitter so it can finish safely");
+          return;
+        } catch { /* fall through to failed state */ }
+      }
       if (longVideoId) {
         try { await finishFn({ data: { longVideoId, status: "failed", errorMessage: msg } }); } catch { /* noop */ }
       }
@@ -521,8 +565,9 @@ function SplitPage() {
                       const dbProgress = c.generation_progress ?? 0;
                       const isNative4k = dbStage.toLowerCase().includes("4k");
                       const db4kFailed = dbStage.toLowerCase().includes("4k failed");
+                      const db4kQueued = dbStage.toLowerCase().includes("4k upgrade queued");
                       const upscaleState = meta?.upscale || (isNative4k
-                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : "running" as const, pct: dbProgress }
+                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : db4kQueued ? "queued" as const : "running" as const, pct: dbProgress }
                         : undefined);
                       return (
                         <motion.div

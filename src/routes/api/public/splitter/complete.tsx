@@ -7,13 +7,16 @@ const BodySchema = z.object({
   index: z.number().int().min(0),
   startSeconds: z.number().nonnegative(),
   endSeconds: z.number().positive(),
-  mp4Base64: z.string().min(100),
+  mp4Base64: z.string().min(100).optional(),
   thumbnailBase64: z.string().optional(),
+  videoStoragePath: z.string().min(1).optional(),
+  thumbnailStoragePath: z.string().min(1).optional(),
+  fileSizeBytes: z.number().int().positive().optional(),
   title: z.string().min(1).max(100),
   description: z.string().default(""),
   tags: z.array(z.string()).default([]),
   durationSeconds: z.number().positive(),
-});
+}).refine((body) => Boolean(body.mp4Base64 || body.videoStoragePath), "Missing clip video payload");
 
 async function handler(request: Request): Promise<Response> {
   const { isAutopilotRequestAuthorized } = await import("@/lib/autopilot-auth.server");
@@ -24,19 +27,31 @@ async function handler(request: Request): Promise<Response> {
   const body = BodySchema.parse(await request.json());
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-  const clipId = crypto.randomUUID();
-  const mp4 = new Uint8Array(Buffer.from(body.mp4Base64, "base64"));
-  const path = `${body.userId}/${clipId}/clip.mp4`;
-  const up = await supabaseAdmin.storage.from("videos").upload(path, mp4, { contentType: "video/mp4", upsert: true });
-  if (up.error) return Response.json({ ok: false, error: up.error.message }, { status: 500 });
+  const clipId = body.videoStoragePath?.split("/")[1] || crypto.randomUUID();
+  let path = body.videoStoragePath || `${body.userId}/${clipId}/clip.mp4`;
+  let fileSizeBytes = body.fileSizeBytes ?? 0;
+  if (!path.startsWith(`${body.userId}/`)) {
+    return Response.json({ ok: false, error: "Invalid clip storage path" }, { status: 400 });
+  }
+  if (body.mp4Base64) {
+    const mp4 = new Uint8Array(Buffer.from(body.mp4Base64, "base64"));
+    fileSizeBytes = mp4.byteLength;
+    const up = await supabaseAdmin.storage.from("videos").upload(path, mp4, { contentType: "video/mp4", upsert: true });
+    if (up.error) return Response.json({ ok: false, error: up.error.message }, { status: 500 });
+  }
   const signed = await supabaseAdmin.storage.from("videos").createSignedUrl(path, 60 * 60 * 24 * 30);
 
   let thumbUrl: string | null = null;
-  let thumbPath: string | null = null;
+  let thumbPath: string | null = body.thumbnailStoragePath ?? null;
+  if (thumbPath && !thumbPath.startsWith(`${body.userId}/`)) {
+    return Response.json({ ok: false, error: "Invalid thumbnail storage path" }, { status: 400 });
+  }
   if (body.thumbnailBase64) {
     const tb = new Uint8Array(Buffer.from(body.thumbnailBase64, "base64"));
-    thumbPath = `${body.userId}/${clipId}.jpg`;
+    thumbPath = thumbPath || `${body.userId}/${clipId}.jpg`;
     await supabaseAdmin.storage.from("thumbnails").upload(thumbPath, tb, { contentType: "image/jpeg", upsert: true });
+  }
+  if (thumbPath) {
     const ts = await supabaseAdmin.storage.from("thumbnails").createSignedUrl(thumbPath, 60 * 60 * 24 * 30);
     thumbUrl = ts.data?.signedUrl ?? null;
   }
@@ -48,18 +63,18 @@ async function handler(request: Request): Promise<Response> {
     title: body.title,
     description: body.description,
     tags: body.tags,
-    hashtags: [],
+    hashtags: ["#shorts", "#shortsfeed"],
     status: "ready",
     video_url: signed.data?.signedUrl ?? null,
     video_storage_path: path,
     thumbnail_url: thumbUrl,
     thumbnail_storage_path: thumbPath,
     duration_seconds: Math.round(body.durationSeconds),
-    file_size_bytes: mp4.byteLength,
+    file_size_bytes: fileSizeBytes,
     clip_start_seconds: body.startSeconds,
     clip_end_seconds: body.endSeconds,
     generation_progress: 100,
-    generation_stage: "Split from long video",
+    generation_stage: "Cinematic split · Shorts-safe 9:16",
   } as never);
   if (insErr) return Response.json({ ok: false, error: insErr.message }, { status: 500 });
 
