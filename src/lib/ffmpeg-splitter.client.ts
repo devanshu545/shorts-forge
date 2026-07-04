@@ -329,7 +329,7 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ], Math.min(90, Math.max(35, durSec * (width >= 720 ? 1.8 : 1.15))), `Shorts compatibility encode for clip ${clipName}`);
@@ -428,7 +428,7 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
   ], Math.min(60, Math.max(12, durSec * 1.2)), `Fast polish for ${clipName}`);
@@ -445,7 +445,7 @@ async function encodePolishedClip(
   durSec: number,
 ) {
   const vf = polishFilter(durSec, 1080, 1920);
-  const code = await ff.exec([
+  const code = await execWithBrowserBudget(ff, [
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
@@ -461,10 +461,10 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     "-threads", "0",
     clipName,
-  ]);
+  ], Math.min(120, Math.max(25, durSec * 1.8)), `Polish encode for ${clipName}`);
   if (code !== 0) throw new Error(`polish encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -753,7 +753,7 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-      "-movflags", "+faststart",
+    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       "-threads", "0",
       outName,
     ]);

@@ -30,9 +30,10 @@ async function headers(extra = {}) {
   if (SECRET) h["x-autopilot-secret"] = SECRET;
   return h;
 }
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe" });
-  if (r.status !== 0) throw new Error(`${cmd} ${args.slice(0,3).join(" ")} failed: ${(r.stderr || r.stdout).slice(-800)}`);
+function run(cmd, args, timeoutMs = 20 * 60 * 1000) {
+  const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe", timeout: timeoutMs });
+  if (r.error) throw new Error(`${cmd} ${args.slice(0,3).join(" ")} failed: ${r.error.message}`);
+  if (r.status !== 0) throw new Error(`${cmd} ${args.slice(0,3).join(" ")} failed: ${(r.stderr || r.stdout).slice(-1200)}`);
   return r.stdout;
 }
 function verticalBlurFilter(w, h, blur = 24) {
@@ -128,6 +129,17 @@ async function uploadSigned(uploadUrl, filePath, contentType) {
   return bytes.length;
 }
 
+async function prepareClipUpload(job, index) {
+  const res = await fetch(`${BASE}/api/public/splitter/prepare-clip-upload`, {
+    method: "POST",
+    headers: await headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ longVideoId: job.longVideoId, userId: job.userId, index }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`prepare clip upload HTTP ${res.status}: ${text.slice(0, 500)}`);
+  return JSON.parse(text);
+}
+
 async function reportUpscaleProgress(clipId, progress, stage) {
   await fetch(`${BASE}/api/public/splitter/upscale-progress`, {
     method: "POST",
@@ -211,17 +223,32 @@ async function processJob(job) {
     const thumb = join(workDir, `thumb${idx}.jpg`);
     const clipDur = (w.end - w.start).toFixed(2);
     console.log(`  · clip ${idx}: ${w.start.toFixed(1)} → ${w.end.toFixed(1)} (${clipDur}s)`);
+    const fadeOut = Math.max(Number(clipDur) - 0.45, 0.1).toFixed(2);
+    const vf = [
+      verticalBlurFilter(1080, 1920),
+      "fps=30",
+      "eq=saturation=1.16:contrast=1.055:brightness=0.012",
+      "unsharp=3:3:0.72:3:3:0.0",
+      "vignette=PI/7:eval=init",
+      "fade=t=in:st=0:d=0.18",
+      `fade=t=out:st=${fadeOut}:d=0.35`,
+    ].join(",");
     run("ffmpeg", [
-      "-y", "-ss", String(w.start), "-i", src, "-t", clipDur,
-      "-vf", `${verticalBlurFilter(1080, 1920)},fps=30`,
+      "-y", "-fflags", "+genpts+igndts+discardcorrupt", "-err_detect", "ignore_err",
+      "-ss", String(w.start), "-i", src, "-t", clipDur,
+      "-vf", vf,
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out,
-    ]);
+      "-max_muxing_queue_size", "4096",
+      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+      "-af", `acompressor=threshold=-18dB:ratio=2.1:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
+      "-movflags", "+faststart", "-shortest", out,
+    ], 18 * 60 * 1000);
     // Thumbnail from middle of clip.
     const mid = ((w.end - w.start) / 2).toFixed(2);
     run("ffmpeg", ["-y", "-ss", mid, "-i", out, "-vframes", "1", "-vf", "scale=720:1280", "-q:v", "3", thumb]);
-    const mp4Base64 = readFileSync(out).toString("base64");
-    const thumbnailBase64 = readFileSync(thumb).toString("base64");
+    const prepared = await prepareClipUpload(job, idx);
+    const fileSizeBytes = await uploadSigned(prepared.videoSignedUrl, out, "video/mp4");
+    await uploadSigned(prepared.thumbnailSignedUrl, thumb, "image/jpeg");
     const title = `Clip ${idx} · ${Math.round(w.start)}s–${Math.round(w.end)}s`;
     const res = await fetch(`${BASE}/api/public/splitter/complete`, {
       method: "POST",
@@ -232,8 +259,9 @@ async function processJob(job) {
         index: idx,
         startSeconds: w.start,
         endSeconds: w.end,
-        mp4Base64,
-        thumbnailBase64,
+        videoStoragePath: prepared.videoPath,
+        thumbnailStoragePath: prepared.thumbnailPath,
+        fileSizeBytes,
         title,
         description: `Auto-cut from long-form video (${Math.round(w.start)}s–${Math.round(w.end)}s).\n\n#shorts #shortsfeed`,
         tags: ["shorts", "shorts fyp", "clip", "highlight"],

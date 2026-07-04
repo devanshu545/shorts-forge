@@ -62,6 +62,46 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const queueLongVideoNative = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: job, error: jobErr } = await supabaseAdmin
+      .from("long_videos")
+      .select("id,user_id,source_path")
+      .eq("id", data.longVideoId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (jobErr) throw new Error(jobErr.message);
+    if (!job?.source_path) throw new Error("Long video source is missing. Upload the source before using the native splitter.");
+
+    const { error } = await supabaseAdmin
+      .from("long_videos")
+      .update({ status: "queued", error_message: null, clips_generated: 0 } as never)
+      .eq("id", data.longVideoId)
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+
+    try {
+      const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
+      const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
+      return {
+        ok: true,
+        dispatchOk: dispatch.ok,
+        message: dispatch.ok ? "Native splitter started" : dispatch.message,
+        latestRunUrl: dispatch.latestRunUrl ?? null,
+      };
+    } catch (err) {
+      return {
+        ok: true,
+        dispatchOk: false,
+        message: err instanceof Error ? err.message : "Native splitter queued; scheduled worker will retry.",
+        latestRunUrl: null,
+      };
+    }
+  });
+
 export const createClipUploadUrls = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) =>
