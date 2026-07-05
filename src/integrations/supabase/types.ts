@@ -190,51 +190,125 @@ export type Database = {
         }
         Relationships: []
       }
+      long_video_events: {
+        Row: {
+          created_at: string
+          detail: Json
+          event_type: string
+          id: string
+          long_video_id: string
+          message: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: Json
+          event_type: string
+          id?: string
+          long_video_id: string
+          message: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          detail?: Json
+          event_type?: string
+          id?: string
+          long_video_id?: string
+          message?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "long_video_events_long_video_id_fkey"
+            columns: ["long_video_id"]
+            isOneToOne: false
+            referencedRelation: "long_videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       long_videos: {
         Row: {
+          attempt_count: number
           clip_length: number
           clips_generated: number
+          completed_at: string | null
           created_at: string
           duration_seconds: number | null
           error_message: string | null
+          failure_code: string | null
           id: string
+          last_progress_at: string | null
+          locked_at: string | null
+          locked_by: string | null
           max_clips: number
           original_filename: string | null
+          processing_started_at: string | null
+          progress_percent: number
+          progress_stage: string | null
           size_bytes: number | null
           source_path: string
           status: string
           updated_at: string
+          upload_completed_at: string | null
+          upload_started_at: string | null
           user_id: string
+          worker_run_id: string | null
         }
         Insert: {
+          attempt_count?: number
           clip_length?: number
           clips_generated?: number
+          completed_at?: string | null
           created_at?: string
           duration_seconds?: number | null
           error_message?: string | null
+          failure_code?: string | null
           id?: string
+          last_progress_at?: string | null
+          locked_at?: string | null
+          locked_by?: string | null
           max_clips?: number
           original_filename?: string | null
+          processing_started_at?: string | null
+          progress_percent?: number
+          progress_stage?: string | null
           size_bytes?: number | null
           source_path: string
           status?: string
           updated_at?: string
+          upload_completed_at?: string | null
+          upload_started_at?: string | null
           user_id: string
+          worker_run_id?: string | null
         }
         Update: {
+          attempt_count?: number
           clip_length?: number
           clips_generated?: number
+          completed_at?: string | null
           created_at?: string
           duration_seconds?: number | null
           error_message?: string | null
+          failure_code?: string | null
           id?: string
+          last_progress_at?: string | null
+          locked_at?: string | null
+          locked_by?: string | null
           max_clips?: number
           original_filename?: string | null
+          processing_started_at?: string | null
+          progress_percent?: number
+          progress_stage?: string | null
           size_bytes?: number | null
           source_path?: string
           status?: string
           updated_at?: string
+          upload_completed_at?: string | null
+          upload_started_at?: string | null
           user_id?: string
+          worker_run_id?: string | null
         }
         Relationships: []
       }
@@ -348,6 +422,7 @@ export type Database = {
           audio_url: string | null
           autopilot_slot: string | null
           clip_end_seconds: number | null
+          clip_index: number | null
           clip_start_seconds: number | null
           created_at: string
           description: string | null
@@ -364,6 +439,7 @@ export type Database = {
           instagram_error: string | null
           instagram_media_id: string | null
           instagram_permalink: string | null
+          last_progress_at: string | null
           long_video_id: string | null
           metadata_options: Json
           scheduled_for: string | null
@@ -379,12 +455,14 @@ export type Database = {
           user_id: string
           video_storage_path: string | null
           video_url: string | null
+          worker_run_id: string | null
           youtube_video_id: string | null
         }
         Insert: {
           audio_url?: string | null
           autopilot_slot?: string | null
           clip_end_seconds?: number | null
+          clip_index?: number | null
           clip_start_seconds?: number | null
           created_at?: string
           description?: string | null
@@ -401,6 +479,7 @@ export type Database = {
           instagram_error?: string | null
           instagram_media_id?: string | null
           instagram_permalink?: string | null
+          last_progress_at?: string | null
           long_video_id?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
@@ -416,12 +495,14 @@ export type Database = {
           user_id: string
           video_storage_path?: string | null
           video_url?: string | null
+          worker_run_id?: string | null
           youtube_video_id?: string | null
         }
         Update: {
           audio_url?: string | null
           autopilot_slot?: string | null
           clip_end_seconds?: number | null
+          clip_index?: number | null
           clip_start_seconds?: number | null
           created_at?: string
           description?: string | null
@@ -438,6 +519,7 @@ export type Database = {
           instagram_error?: string | null
           instagram_media_id?: string | null
           instagram_permalink?: string | null
+          last_progress_at?: string | null
           long_video_id?: string | null
           metadata_options?: Json
           scheduled_for?: string | null
@@ -453,6 +535,7 @@ export type Database = {
           user_id?: string
           video_storage_path?: string | null
           video_url?: string | null
+          worker_run_id?: string | null
           youtube_video_id?: string | null
         }
         Relationships: [
@@ -556,7 +639,37 @@ export type Database = {
       }
     }
     Functions: {
-      [_ in never]: never
+      claim_next_long_video_job: {
+        Args: {
+          _explicit_id?: string
+          _max_attempts?: number
+          _stale_after?: string
+          _worker_id: string
+        }
+        Returns: {
+          attempt_count: number
+          clip_length: number
+          id: string
+          max_clips: number
+          source_path: string
+          status: string
+          user_id: string
+        }[]
+      }
+      log_long_video_event: {
+        Args: {
+          _detail?: Json
+          _event_type: string
+          _long_video_id: string
+          _message: string
+          _user_id: string
+        }
+        Returns: undefined
+      }
+      mark_stale_long_video_jobs: {
+        Args: { _max_attempts?: number; _stale_after?: string }
+        Returns: number
+      }
     }
     Enums: {
       cadence: "once" | "daily" | "weekly"
