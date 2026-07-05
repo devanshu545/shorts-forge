@@ -337,9 +337,8 @@ export const registerSplitClip = createServerFn({ method: "POST" })
       thumbnail_storage_path: data.thumbnailStoragePath,
       duration_seconds: Math.round(data.durationSeconds),
       file_size_bytes: data.fileSizeBytes,
-      clip_start_seconds: data.startSeconds,
-      clip_end_seconds: data.endSeconds,
-        clip_index: data.clipId ? undefined : undefined,
+        clip_start_seconds: data.startSeconds,
+        clip_end_seconds: data.endSeconds,
       generation_progress: 100,
       generation_stage: "Split in your browser",
     } as never);
@@ -403,6 +402,29 @@ export const listClipsForLongVideo = createServerFn({ method: "POST" })
       .order("clip_start_seconds", { ascending: true });
     if (error) throw new Error(error.message);
     return rows ?? [];
+  });
+
+export const getClipFreshUrls = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => z.object({ videoId: z.string().uuid() }).parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: video, error } = await supabaseAdmin
+      .from("videos")
+      .select("id,user_id,video_storage_path,thumbnail_storage_path,video_url,thumbnail_url")
+      .eq("id", data.videoId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!video) throw new Error("Video not found");
+
+    const videoUrl = video.video_storage_path
+      ? (await supabaseAdmin.storage.from("videos").createSignedUrl(video.video_storage_path, 60 * 60 * 2)).data?.signedUrl
+      : video.video_url;
+    const thumbnailUrl = video.thumbnail_storage_path
+      ? (await supabaseAdmin.storage.from("thumbnails").createSignedUrl(video.thumbnail_storage_path, 60 * 60 * 2)).data?.signedUrl
+      : video.thumbnail_url;
+    return { videoUrl: videoUrl ?? null, thumbnailUrl: thumbnailUrl ?? null };
   });
 
 export const listLongVideoEvents = createServerFn({ method: "POST" })
