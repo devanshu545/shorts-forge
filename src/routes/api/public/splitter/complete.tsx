@@ -116,13 +116,15 @@ async function handler(request: Request): Promise<Response> {
       last_progress_at: new Date().toISOString(),
     } as never).eq("id", body.longVideoId);
 
-    await supabaseAdmin.rpc("log_long_video_event" as never, {
-      _long_video_id: body.longVideoId,
-      _user_id: body.userId,
-      _event_type: existing ? "clip_updated" : "clip_created",
-      _message: `Clip ${body.index} saved`,
-      _detail: { clipId, path },
-    } as never).catch?.(() => null);
+    try {
+      await supabaseAdmin.rpc("log_long_video_event" as never, {
+        _long_video_id: body.longVideoId,
+        _user_id: body.userId,
+        _event_type: existing ? "clip_updated" : "clip_created",
+        _message: `Clip ${body.index} saved`,
+        _detail: { clipId, path },
+      } as never);
+    } catch { /* best-effort event log */ }
 
     return Response.json({ ok: true, videoId: clipId, videoUrl: signed.data.signedUrl, updated: Boolean(existing) });
   } catch (err) {
