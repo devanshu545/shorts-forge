@@ -26,6 +26,7 @@ import { Route as ApiPublicSplitterUpscaleTickRouteImport } from './routes/api/p
 import { Route as ApiPublicSplitterUpscaleProgressRouteImport } from './routes/api/public/splitter/upscale-progress'
 import { Route as ApiPublicSplitterUpscaleCompleteRouteImport } from './routes/api/public/splitter/upscale-complete'
 import { Route as ApiPublicSplitterTickRouteImport } from './routes/api/public/splitter/tick'
+import { Route as ApiPublicSplitterProgressRouteImport } from './routes/api/public/splitter/progress'
 import { Route as ApiPublicSplitterPrepareClipUploadRouteImport } from './routes/api/public/splitter/prepare-clip-upload'
 import { Route as ApiPublicSplitterFinishRouteImport } from './routes/api/public/splitter/finish'
 import { Route as ApiPublicSplitterCompleteRouteImport } from './routes/api/public/splitter/complete'
@@ -123,6 +124,12 @@ const ApiPublicSplitterTickRoute = ApiPublicSplitterTickRouteImport.update({
   path: '/api/public/splitter/tick',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicSplitterProgressRoute =
+  ApiPublicSplitterProgressRouteImport.update({
+    id: '/api/public/splitter/progress',
+    path: '/api/public/splitter/progress',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicSplitterPrepareClipUploadRoute =
   ApiPublicSplitterPrepareClipUploadRouteImport.update({
     id: '/api/public/splitter/prepare-clip-upload',
@@ -190,6 +197,7 @@ export interface FileRoutesByFullPath {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/prepare-clip-upload': typeof ApiPublicSplitterPrepareClipUploadRoute
+  '/api/public/splitter/progress': typeof ApiPublicSplitterProgressRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
   '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
@@ -216,6 +224,7 @@ export interface FileRoutesByTo {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/prepare-clip-upload': typeof ApiPublicSplitterPrepareClipUploadRoute
+  '/api/public/splitter/progress': typeof ApiPublicSplitterProgressRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
   '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
@@ -244,6 +253,7 @@ export interface FileRoutesById {
   '/api/public/splitter/complete': typeof ApiPublicSplitterCompleteRoute
   '/api/public/splitter/finish': typeof ApiPublicSplitterFinishRoute
   '/api/public/splitter/prepare-clip-upload': typeof ApiPublicSplitterPrepareClipUploadRoute
+  '/api/public/splitter/progress': typeof ApiPublicSplitterProgressRoute
   '/api/public/splitter/tick': typeof ApiPublicSplitterTickRoute
   '/api/public/splitter/upscale-complete': typeof ApiPublicSplitterUpscaleCompleteRoute
   '/api/public/splitter/upscale-progress': typeof ApiPublicSplitterUpscaleProgressRoute
@@ -272,6 +282,7 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/prepare-clip-upload'
+    | '/api/public/splitter/progress'
     | '/api/public/splitter/tick'
     | '/api/public/splitter/upscale-complete'
     | '/api/public/splitter/upscale-progress'
@@ -298,6 +309,7 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/prepare-clip-upload'
+    | '/api/public/splitter/progress'
     | '/api/public/splitter/tick'
     | '/api/public/splitter/upscale-complete'
     | '/api/public/splitter/upscale-progress'
@@ -325,6 +337,7 @@ export interface FileRouteTypes {
     | '/api/public/splitter/complete'
     | '/api/public/splitter/finish'
     | '/api/public/splitter/prepare-clip-upload'
+    | '/api/public/splitter/progress'
     | '/api/public/splitter/tick'
     | '/api/public/splitter/upscale-complete'
     | '/api/public/splitter/upscale-progress'
@@ -345,6 +358,7 @@ export interface RootRouteChildren {
   ApiPublicSplitterCompleteRoute: typeof ApiPublicSplitterCompleteRoute
   ApiPublicSplitterFinishRoute: typeof ApiPublicSplitterFinishRoute
   ApiPublicSplitterPrepareClipUploadRoute: typeof ApiPublicSplitterPrepareClipUploadRoute
+  ApiPublicSplitterProgressRoute: typeof ApiPublicSplitterProgressRoute
   ApiPublicSplitterTickRoute: typeof ApiPublicSplitterTickRoute
   ApiPublicSplitterUpscaleCompleteRoute: typeof ApiPublicSplitterUpscaleCompleteRoute
   ApiPublicSplitterUpscaleProgressRoute: typeof ApiPublicSplitterUpscaleProgressRoute
@@ -473,6 +487,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicSplitterTickRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/splitter/progress': {
+      id: '/api/public/splitter/progress'
+      path: '/api/public/splitter/progress'
+      fullPath: '/api/public/splitter/progress'
+      preLoaderRoute: typeof ApiPublicSplitterProgressRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/splitter/prepare-clip-upload': {
       id: '/api/public/splitter/prepare-clip-upload'
       path: '/api/public/splitter/prepare-clip-upload'
@@ -571,6 +592,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicSplitterFinishRoute: ApiPublicSplitterFinishRoute,
   ApiPublicSplitterPrepareClipUploadRoute:
     ApiPublicSplitterPrepareClipUploadRoute,
+  ApiPublicSplitterProgressRoute: ApiPublicSplitterProgressRoute,
   ApiPublicSplitterTickRoute: ApiPublicSplitterTickRoute,
   ApiPublicSplitterUpscaleCompleteRoute: ApiPublicSplitterUpscaleCompleteRoute,
   ApiPublicSplitterUpscaleProgressRoute: ApiPublicSplitterUpscaleProgressRoute,
@@ -580,13 +602,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

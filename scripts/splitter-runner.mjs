@@ -12,6 +12,7 @@ const BASE = (process.env.APP_BASE_URL || DEFAULT_BASE).replace(/\/+$/, "");
 const SECRET = process.env.AUTOPILOT_SECRET;
 const EXPLICIT_ID = process.env.LONG_VIDEO_ID || "";
 const UPSCALE_CLIP_ID = process.env.CLIP_ID || "";
+const WORKER_ID = process.env.GITHUB_RUN_ID ? `github-${process.env.GITHUB_RUN_ID}` : `local-${Date.now()}`;
 
 async function getOidc() {
   const u = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
@@ -24,11 +25,33 @@ async function getOidc() {
   return typeof b.value === "string" ? b.value : null;
 }
 async function headers(extra = {}) {
-  const h = { ...extra };
+  const h = { "x-worker-run-id": WORKER_ID, ...extra };
   const t = await getOidc();
   if (t) h.Authorization = `Bearer ${t}`;
   if (SECRET) h["x-autopilot-secret"] = SECRET;
   return h;
+}
+async function fetchWithTimeout(url, init = {}, timeoutMs = 120_000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+async function retry(label, fn, attempts = 3) {
+  let last;
+  for (let i = 1; i <= attempts; i += 1) {
+    try { return await fn(i); }
+    catch (err) {
+      last = err;
+      if (i >= attempts) break;
+      console.warn(`${label} attempt ${i} failed: ${err instanceof Error ? err.message : err}`);
+      await new Promise((resolve) => setTimeout(resolve, 800 * i));
+    }
+  }
+  throw last;
 }
 function run(cmd, args, timeoutMs = 20 * 60 * 1000) {
   const r = spawnSync(cmd, args, { encoding: "utf8", stdio: "pipe", timeout: timeoutMs });
@@ -47,6 +70,32 @@ function verticalBlurFilter(w, h, blur = 24) {
 function probeDuration(p) {
   const s = run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", p]).trim();
   return Number(s) || 0;
+}
+function probeVideoMeta(p) {
+  const out = run("ffprobe", [
+    "-v", "error",
+    "-select_streams", "v:0",
+    "-show_entries", "stream=width,height:format=duration",
+    "-of", "json",
+    p,
+  ]);
+  const json = JSON.parse(out);
+  const stream = json.streams?.[0] || {};
+  return {
+    width: Number(stream.width) || 0,
+    height: Number(stream.height) || 0,
+    duration: Number(json.format?.duration) || 0,
+  };
+}
+function assertShortsSafe(filePath, label) {
+  const meta = probeVideoMeta(filePath);
+  const ratio = meta.width / Math.max(meta.height, 1);
+  if (!(meta.height > meta.width && Math.abs(ratio - 9 / 16) < 0.02)) {
+    throw new Error(`${label} is not valid 9:16 Shorts format (${meta.width}x${meta.height})`);
+  }
+  if (meta.duration > 60.5) throw new Error(`${label} is too long for Shorts (${meta.duration.toFixed(1)}s)`);
+  if (meta.duration <= 0) throw new Error(`${label} has no valid duration`);
+  return meta;
 }
 function detectSceneStarts(p, thresh = 0.35) {
   try {
@@ -100,7 +149,7 @@ async function fetchJob() {
   const url = EXPLICIT_ID
     ? `${BASE}/api/public/splitter/tick?longVideoId=${EXPLICIT_ID}`
     : `${BASE}/api/public/splitter/tick`;
-  const res = await fetch(url, { method: "POST", headers: await headers({ "Content-Type": "application/json" }) });
+  const res = await fetchWithTimeout(url, { method: "POST", headers: await headers({ "Content-Type": "application/json" }) }, 45_000);
   const text = await res.text();
   if (!res.ok) throw new Error(`tick failed HTTP ${res.status}: ${text.slice(0, 500)}`);
   const json = JSON.parse(text);
@@ -108,10 +157,10 @@ async function fetchJob() {
 }
 
 async function fetchUpscaleJob() {
-  const res = await fetch(`${BASE}/api/public/splitter/upscale-tick?clipId=${UPSCALE_CLIP_ID}`, {
+  const res = await fetchWithTimeout(`${BASE}/api/public/splitter/upscale-tick?clipId=${UPSCALE_CLIP_ID}`, {
     method: "POST",
     headers: await headers({ "Content-Type": "application/json" }),
-  });
+  }, 45_000);
   const text = await res.text();
   if (!res.ok) throw new Error(`upscale tick failed HTTP ${res.status}: ${text.slice(0, 500)}`);
   const json = JSON.parse(text);
@@ -120,32 +169,42 @@ async function fetchUpscaleJob() {
 
 async function uploadSigned(uploadUrl, filePath, contentType) {
   const bytes = readFileSync(filePath);
-  const payload = new FormData();
-  payload.append("cacheControl", "3600");
-  payload.append("", new Blob([bytes], { type: contentType }));
-  const res = await fetch(uploadUrl, { method: "PUT", body: payload, headers: { "x-upsert": "true" } });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`signed upload failed HTTP ${res.status}: ${text.slice(0, 500)}`);
-  return bytes.length;
+  return retry(`signed upload ${filePath}`, async () => {
+    const payload = new FormData();
+    payload.append("cacheControl", "3600");
+    payload.append("", new Blob([bytes], { type: contentType }));
+    const res = await fetchWithTimeout(uploadUrl, { method: "PUT", body: payload, headers: { "x-upsert": "true" } }, 8 * 60 * 1000);
+    const text = await res.text();
+    if (!res.ok) throw new Error(`signed upload failed HTTP ${res.status}: ${text.slice(0, 500)}`);
+    return bytes.length;
+  }, 3);
 }
 
 async function prepareClipUpload(job, index) {
-  const res = await fetch(`${BASE}/api/public/splitter/prepare-clip-upload`, {
+  const res = await fetchWithTimeout(`${BASE}/api/public/splitter/prepare-clip-upload`, {
     method: "POST",
     headers: await headers({ "Content-Type": "application/json" }),
     body: JSON.stringify({ longVideoId: job.longVideoId, userId: job.userId, index }),
-  });
+  }, 45_000);
   const text = await res.text();
   if (!res.ok) throw new Error(`prepare clip upload HTTP ${res.status}: ${text.slice(0, 500)}`);
   return JSON.parse(text);
 }
 
+async function reportSplitProgress(job, progress, stage, detail = {}) {
+  await fetchWithTimeout(`${BASE}/api/public/splitter/progress`, {
+    method: "POST",
+    headers: await headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ longVideoId: job.longVideoId, userId: job.userId, progress, stage, workerId: WORKER_ID, detail }),
+  }, 20_000).catch(() => {});
+}
+
 async function reportUpscaleProgress(clipId, progress, stage) {
-  await fetch(`${BASE}/api/public/splitter/upscale-progress`, {
+  await fetchWithTimeout(`${BASE}/api/public/splitter/upscale-progress`, {
     method: "POST",
     headers: await headers({ "Content-Type": "application/json" }),
     body: JSON.stringify({ clipId, progress, stage }),
-  }).catch(() => {});
+  }, 20_000).catch(() => {});
 }
 
 async function processUpscaleJob(job) {
@@ -156,7 +215,7 @@ async function processUpscaleJob(job) {
   const src = join(workDir, "clip-source.mp4");
   const out = join(workDir, "clip-4k.mp4");
   console.log(`Downloading HD clip (${job.sourceUrl.slice(0, 90)}…)`);
-  const dl = await fetch(job.sourceUrl);
+  const dl = await retry("download 4K source clip", () => fetchWithTimeout(job.sourceUrl, {}, 4 * 60 * 1000), 3);
   if (!dl.ok) throw new Error(`Clip download failed HTTP ${dl.status}`);
   writeFileSync(src, Buffer.from(await dl.arrayBuffer()));
   await reportUpscaleProgress(job.clipId, 30, "Native 4K source downloaded");
@@ -180,15 +239,16 @@ async function processUpscaleJob(job) {
     "-af", "acompressor=threshold=-18dB:ratio=2.1:attack=12:release=120,alimiter=limit=0.96",
     "-movflags", "+faststart", out,
   ]);
+  assertShortsSafe(out, "4K upgraded clip");
   await reportUpscaleProgress(job.clipId, 82, "Native 4K render finished; uploading");
 
   const size = await uploadSigned(job.uploadSignedUrl, out, "video/mp4");
   await reportUpscaleProgress(job.clipId, 94, "Native 4K upload finished; finalizing");
-  const res = await fetch(`${BASE}/api/public/splitter/upscale-complete`, {
+  const res = await fetchWithTimeout(`${BASE}/api/public/splitter/upscale-complete`, {
     method: "POST",
     headers: await headers({ "Content-Type": "application/json" }),
     body: JSON.stringify({ clipId: job.clipId, fileSizeBytes: size, durationSeconds: dur }),
-  });
+  }, 45_000);
   const text = await res.text();
   if (!res.ok) throw new Error(`upscale complete HTTP ${res.status}: ${text.slice(0, 500)}`);
   rmSync(workDir, { recursive: true, force: true });
@@ -201,7 +261,8 @@ async function processJob(job) {
 
   const src = join(workDir, "source.mp4");
   console.log(`Downloading source (${job.sourceUrl.slice(0, 90)}…)`);
-  const dl = await fetch(job.sourceUrl);
+  await reportSplitProgress(job, 18, "Downloading source video");
+  const dl = await retry("download source", () => fetchWithTimeout(job.sourceUrl, {}, 8 * 60 * 1000), 3);
   if (!dl.ok) throw new Error(`Source download failed HTTP ${dl.status}`);
   const buf = Buffer.from(await dl.arrayBuffer());
   writeFileSync(src, buf);
@@ -210,11 +271,14 @@ async function processJob(job) {
   const dur = probeDuration(src);
   if (dur <= 0) throw new Error("Could not probe source duration");
   console.log(`Duration: ${dur.toFixed(1)}s`);
+  await reportSplitProgress(job, 24, "Source downloaded and metadata verified", { durationSeconds: dur });
 
   const scenes = detectSceneStarts(src, 0.35);
   console.log(`Detected ${scenes.length} scene changes`);
   const windows = pickWindows(dur, job.clipLength, job.maxClips, scenes);
   console.log(`Producing ${windows.length} clips`);
+  if (!windows.length) throw new Error("No usable clip windows could be selected from this video");
+  await reportSplitProgress(job, 30, `Selected ${windows.length} Shorts moments`, { scenes: scenes.length, clips: windows.length });
 
   let idx = 0;
   for (const w of windows) {
@@ -223,6 +287,8 @@ async function processJob(job) {
     const thumb = join(workDir, `thumb${idx}.jpg`);
     const clipDur = (w.end - w.start).toFixed(2);
     console.log(`  · clip ${idx}: ${w.start.toFixed(1)} → ${w.end.toFixed(1)} (${clipDur}s)`);
+    const baseProgress = 30 + Math.round(((idx - 1) / windows.length) * 55);
+    await reportSplitProgress(job, baseProgress, `Rendering clip ${idx} of ${windows.length}`);
     const fadeOut = Math.max(Number(clipDur) - 0.45, 0.1).toFixed(2);
     const vf = [
       verticalBlurFilter(1080, 1920),
@@ -243,14 +309,16 @@ async function processJob(job) {
       "-af", `acompressor=threshold=-18dB:ratio=2.1:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
       "-movflags", "+faststart", "-shortest", out,
     ], 18 * 60 * 1000);
+    const meta = assertShortsSafe(out, `clip ${idx}`);
     // Thumbnail from middle of clip.
     const mid = ((w.end - w.start) / 2).toFixed(2);
     run("ffmpeg", ["-y", "-ss", mid, "-i", out, "-vframes", "1", "-vf", "scale=720:1280", "-q:v", "3", thumb]);
     const prepared = await prepareClipUpload(job, idx);
+    await reportSplitProgress(job, Math.min(90, baseProgress + 8), `Uploading clip ${idx} of ${windows.length}`);
     const fileSizeBytes = await uploadSigned(prepared.videoSignedUrl, out, "video/mp4");
     await uploadSigned(prepared.thumbnailSignedUrl, thumb, "image/jpeg");
     const title = `Clip ${idx} · ${Math.round(w.start)}s–${Math.round(w.end)}s`;
-    const res = await fetch(`${BASE}/api/public/splitter/complete`, {
+    const res = await fetchWithTimeout(`${BASE}/api/public/splitter/complete`, {
       method: "POST",
       headers: await headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({
@@ -265,19 +333,22 @@ async function processJob(job) {
         title,
         description: `Auto-cut from long-form video (${Math.round(w.start)}s–${Math.round(w.end)}s).\n\n#shorts #shortsfeed`,
         tags: ["shorts", "shorts fyp", "clip", "highlight"],
-        durationSeconds: w.end - w.start,
+        durationSeconds: meta.duration || (w.end - w.start),
       }),
-    });
+    }, 60_000);
     const t = await res.text();
     if (!res.ok) throw new Error(`complete[${idx}] HTTP ${res.status}: ${t.slice(0, 400)}`);
     console.log(`    ✅ uploaded clip ${idx}`);
+    await reportSplitProgress(job, Math.min(95, 30 + Math.round((idx / windows.length) * 60)), `Clip ${idx} saved`);
   }
 
-  await fetch(`${BASE}/api/public/splitter/finish`, {
+  const finish = await fetchWithTimeout(`${BASE}/api/public/splitter/finish`, {
     method: "POST",
     headers: await headers({ "Content-Type": "application/json" }),
     body: JSON.stringify({ longVideoId: job.longVideoId, status: "ready", durationSeconds: dur }),
-  });
+  }, 45_000);
+  const finishText = await finish.text();
+  if (!finish.ok) throw new Error(`finish HTTP ${finish.status}: ${finishText.slice(0, 500)}`);
   rmSync(workDir, { recursive: true, force: true });
 }
 
@@ -292,11 +363,11 @@ async function main() {
     } catch (err) {
       console.error("FATAL:", err);
       try {
-        await fetch(`${BASE}/api/public/splitter/upscale-complete`, {
+        await fetchWithTimeout(`${BASE}/api/public/splitter/upscale-complete`, {
           method: "POST",
           headers: await headers({ "Content-Type": "application/json" }),
           body: JSON.stringify({ clipId: UPSCALE_CLIP_ID, errorMessage: String(err instanceof Error ? err.message : err).slice(0, 1000) }),
-        });
+        }, 30_000);
       } catch {}
       process.exit(1);
     }
@@ -311,11 +382,11 @@ async function main() {
   } catch (err) {
     console.error("FATAL:", err);
     try {
-      await fetch(`${BASE}/api/public/splitter/finish`, {
+      await fetchWithTimeout(`${BASE}/api/public/splitter/finish`, {
         method: "POST",
         headers: await headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ longVideoId: job.longVideoId, status: "failed", errorMessage: String(err instanceof Error ? err.message : err).slice(0, 1000) }),
-      });
+        body: JSON.stringify({ longVideoId: job.longVideoId, status: "failed_retryable", errorMessage: String(err instanceof Error ? err.message : err).slice(0, 1000) }),
+      }, 30_000);
     } catch {}
     process.exit(1);
   }
