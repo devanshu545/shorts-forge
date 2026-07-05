@@ -19,7 +19,9 @@ async function handler(request: Request): Promise<Response> {
     const workerId = request.headers.get("x-worker-run-id") || url.searchParams.get("worker") || `worker-${crypto.randomUUID()}`;
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-    await supabaseAdmin.rpc("mark_stale_long_video_jobs" as never, {} as never).catch(() => null);
+    try {
+      await supabaseAdmin.rpc("mark_stale_long_video_jobs" as never, {} as never);
+    } catch { /* best-effort stale recovery */ }
     const { data: rows, error } = await supabaseAdmin.rpc("claim_next_long_video_job" as never, {
       _worker_id: workerId,
       _explicit_id: explicitId,
@@ -44,13 +46,15 @@ async function handler(request: Request): Promise<Response> {
       return json({ ok: false, error: signErr?.message || "Could not sign source video" }, { status: 500 });
     }
 
-    await supabaseAdmin.rpc("log_long_video_event" as never, {
-      _long_video_id: job.id,
-      _user_id: job.user_id,
-      _event_type: "claimed",
-      _message: "Native splitter worker claimed the job",
-      _detail: { workerId, attempt: job.attempt_count },
-    } as never).catch(() => null);
+    try {
+      await supabaseAdmin.rpc("log_long_video_event" as never, {
+        _long_video_id: job.id,
+        _user_id: job.user_id,
+        _event_type: "claimed",
+        _message: "Native splitter worker claimed the job",
+        _detail: { workerId, attempt: job.attempt_count },
+      } as never);
+    } catch { /* best-effort event log */ }
 
     return json({
       ok: true,
