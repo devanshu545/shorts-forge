@@ -153,6 +153,7 @@ export const queueLongVideoNative = createServerFn({ method: "POST" })
         error_message: null,
         failure_code: null,
         clips_generated: 0,
+        attempt_count: 0,
         progress_percent: 15,
         progress_stage: "Queued for native cinematic splitter",
         last_progress_at: new Date().toISOString(),
