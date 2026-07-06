@@ -233,9 +233,10 @@ function SplitPage() {
         etaSeconds: 0, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000), fps: null, uploadMBps: null, updatedAt: Date.now(),
         message: queued.dispatchOk
           ? "Native cinematic splitter started. Clips will appear automatically as each one is uploaded."
-          : "Native cinematic splitter queued. The scheduled worker will retry automatically if the dispatch is delayed.",
+          : `Queued. Scheduled worker will pick it up within ~5 minutes. (${queued.message || "dispatch failed"})`,
       });
-      toast.success("Native cinematic splitter queued");
+      if (queued.dispatchOk) toast.success("Native cinematic splitter started");
+      else toast.warning(queued.message || "Dispatch failed — scheduler will retry within ~5 min");
       setFile(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
@@ -364,7 +365,15 @@ function SplitPage() {
               variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
             >
               <AnimatePresence>
-                {jobs.map((j) => (
+                {jobs.map((j) => {
+                  const heartbeatAgeSec = j.last_progress_at
+                    ? Math.round((Date.now() - new Date(j.last_progress_at).getTime()) / 1000)
+                    : null;
+                  const isActive = j.status === "queued" || j.status === "uploaded" || j.status === "processing";
+                  const isStalled = isActive && heartbeatAgeSec !== null && heartbeatAgeSec > 120;
+                  const displayStatus = isStalled ? "recovering" : j.status;
+                  const canRetry = j.status === "failed_retryable" || isStalled;
+                  return (
                   <motion.li
                     key={j.id}
                     layout
@@ -383,6 +392,7 @@ function SplitPage() {
                         {j.clip_length}s × up to {j.max_clips} · {j.clips_generated} clip(s) generated
                         {typeof j.progress_percent === "number" ? ` · ${j.progress_percent}%` : ""}
                         {j.progress_stage ? ` · ${j.progress_stage.slice(0, 60)}` : ""}
+                        {isStalled ? ` · no heartbeat for ${heartbeatAgeSec}s` : ""}
                         {j.error_message ? ` · ${j.error_message.slice(0, 80)}` : ""}
                       </div>
                       {j.status !== "ready" && j.status !== "failed_final" && (
@@ -391,11 +401,11 @@ function SplitPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge
-                        variant={j.status === "ready" ? "default" : j.status.includes("failed") ? "destructive" : "secondary"}
+                        variant={j.status === "ready" ? "default" : (j.status.includes("failed") || isStalled) ? "destructive" : "secondary"}
                       >
-                        {j.status}
+                        {displayStatus}
                       </Badge>
-                      {j.status === "failed_retryable" && (
+                      {canRetry && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -422,7 +432,8 @@ function SplitPage() {
                       </Button>
                     </div>
                   </motion.li>
-                ))}
+                  );
+                })}
               </AnimatePresence>
             </motion.ul>
           )}
