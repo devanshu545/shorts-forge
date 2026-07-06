@@ -233,9 +233,10 @@ function SplitPage() {
         etaSeconds: 0, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000), fps: null, uploadMBps: null, updatedAt: Date.now(),
         message: queued.dispatchOk
           ? "Native cinematic splitter started. Clips will appear automatically as each one is uploaded."
-          : "Native cinematic splitter queued. The scheduled worker will retry automatically if the dispatch is delayed.",
+          : `Queued. Scheduled worker will pick it up within ~5 minutes. (${queued.message || "dispatch failed"})`,
       });
-      toast.success("Native cinematic splitter queued");
+      if (queued.dispatchOk) toast.success("Native cinematic splitter started");
+      else toast.warning(queued.message || "Dispatch failed — scheduler will retry within ~5 min");
       setFile(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
