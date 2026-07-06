@@ -203,6 +203,7 @@ export const retryLongVideoNative = createServerFn({ method: "POST" })
         status: "queued",
         error_message: null,
         failure_code: null,
+        attempt_count: 0,
         progress_percent: 15,
         progress_stage: "Retry queued for native splitter",
         last_progress_at: new Date().toISOString(),
