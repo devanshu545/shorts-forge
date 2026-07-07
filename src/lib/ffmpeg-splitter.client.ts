@@ -13,12 +13,7 @@ let activeAbort = false;
 let abortReason: string | null = null;
 
 function ffmpegLogTail(lines = 14): string {
-  const compact = recentLogs
-    .slice(-lines)
-    .map((line) => line.replace(/Last message repeated \d+ times?/gi, "repeated decoder message"))
-    .filter((line, index, arr) => line && line !== arr[index - 1]);
-  const text = compact.join(" | ") || "no ffmpeg log output";
-  return text.length > 900 ? `${text.slice(0, 900)}…` : text;
+  return recentLogs.slice(-lines).join(" | ") || "no ffmpeg log output";
 }
 
 async function getLocalWasmUrl(): Promise<string> {
@@ -97,35 +92,6 @@ function verticalCenterGraph(w: number, h: number, blur = 22): string {
   ].join(";");
 }
 
-async function probeMp4Meta(mp4: Uint8Array): Promise<{ width: number; height: number; duration: number }> {
-  const blob = new Blob([mp4.slice().buffer as ArrayBuffer], { type: "video/mp4" });
-  const url = URL.createObjectURL(blob);
-  try {
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "metadata";
-    video.src = url;
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("Could not read generated MP4 metadata"));
-      setTimeout(() => (video.videoWidth ? resolve() : reject(new Error("Timed out reading generated MP4 metadata"))), 8000);
-    });
-    return {
-      width: video.videoWidth,
-      height: video.videoHeight,
-      duration: Number.isFinite(video.duration) ? video.duration : 0,
-    };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-function isVerticalShortMeta(meta: { width: number; height: number; duration: number }) {
-  const ratio = meta.width / Math.max(meta.height, 1);
-  return meta.height > meta.width && Math.abs(ratio - 9 / 16) < 0.015 && meta.duration <= 60.5;
-}
-
 function polishFilter(clipDurationSec: number, w = 1080, h = 1920): string {
   const fadeOutStart = Math.max(clipDurationSec - 0.5, 0.1).toFixed(2);
   const tail = [
@@ -155,24 +121,6 @@ function terminateActive(reason: string) {
   abortReason = reason;
   try { ffmpegInstance?.terminate(); } catch { /* noop */ }
   ffmpegInstance = null;
-}
-
-async function execWithBrowserBudget(ff: FFmpeg, args: string[], budgetSec: number, label: string) {
-  let timeoutId = 0;
-  const budgetMs = Math.max(5, budgetSec) * 1000;
-  try {
-    return await Promise.race([
-      ff.exec(args, budgetMs + 2_000),
-      new Promise<number>((_, reject) => {
-        timeoutId = window.setTimeout(() => {
-          terminateActive(`${label} exceeded its safe time budget; keeping the fastest working Shorts path`);
-          reject(new Error(abortReason || `${label} timed out`));
-        }, budgetMs);
-      }),
-    ]);
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
 }
 
 async function makeThumbnailFromMp4(mp4: Uint8Array): Promise<{ jpg: Uint8Array; frames: string[] }> {
@@ -296,7 +244,7 @@ async function cutClipFastCopyFromFile(ff: FFmpeg, inputName: string, clipName: 
     "-avoid_negative_ts", "make_zero",
     "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
     clipName,
-  ], 25);
+  ]);
   if (code !== 0) throw new Error(`fast copy exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -307,20 +255,15 @@ async function encodeCompatibilityClip(
   clipName: string,
   startSec: number,
   durSec: number,
-  width = 720,
-  height = 1280,
-  blur = 18,
 ) {
-  const code = await execWithBrowserBudget(ff, [
+  const code = await ff.exec([
     "-y",
-    "-fflags", "+genpts+igndts+discardcorrupt",
-    "-err_detect", "ignore_err",
     "-ss", String(startSec),
     "-i", inputName,
     "-t", durSec.toFixed(2),
     "-map", "0:v:0",
     "-map", "0:a?",
-    "-vf", verticalCenterGraph(width, height, blur),
+    "-vf", verticalCenterGraph(1080, 1920),
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
@@ -330,68 +273,11 @@ async function encodeCompatibilityClip(
     "-c:a", "aac",
     "-b:a", "128k",
     "-ac", "2",
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ], Math.min(90, Math.max(35, durSec * (width >= 720 ? 1.8 : 1.15))), `Shorts compatibility encode for clip ${clipName}`);
+  ]);
   if (code !== 0) throw new Error(`compat encode exit ${code}: ${ffmpegLogTail()}`);
-}
-
-async function encodeShortsSafeClipFromBytes(
-  ff: FFmpeg,
-  mp4: Uint8Array,
-  clipName: string,
-  durSec: number,
-) {
-  const inName = `${clipName.replace(/\.mp4$/i, "")}_in.mp4`;
-  await ff.writeFile(inName, new Uint8Array(mp4));
-  try {
-    const code = await execWithBrowserBudget(ff, [
-      "-y",
-      "-fflags", "+genpts+igndts+discardcorrupt",
-      "-err_detect", "ignore_err",
-      "-i", inName,
-      "-t", Math.min(durSec, 60).toFixed(2),
-      "-vf", verticalCenterGraph(720, 1280, 18),
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-tune", "zerolatency",
-      "-x264-params", "keyint=60:min-keyint=30:scenecut=0:rc-lookahead=0:ref=1:bframes=0",
-      "-crf", "21",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      "-b:a", "160k",
-      "-ac", "2",
-      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-      "-threads", "0",
-      clipName,
-    ], Math.min(90, Math.max(35, durSec * 1.8)), `Shorts-safe encode for ${clipName}`);
-    if (code !== 0) throw new Error(`shorts-safe encode exit ${code}: ${ffmpegLogTail()}`);
-  } finally {
-    try { await ff.deleteFile(inName); } catch { /* noop */ }
-  }
-}
-
-async function ensureVerticalShortMp4(
-  ff: FFmpeg,
-  mp4: Uint8Array,
-  clipName: string,
-  durSec: number,
-  clipIndex: number,
-  source?: { inputName: string; startSec: number },
-) {
-  const meta = await probeMp4Meta(mp4).catch(() => null);
-  if (meta?.duration && meta.duration > 60.5) throw new Error(`Clip ${clipIndex} is ${Math.round(meta.duration)}s; YouTube Shorts must be 60s or less.`);
-  if (meta && isVerticalShortMeta(meta)) return mp4;
-  if (source) {
-    await encodeCompatibilityClip(ff, source.inputName, clipName, source.startSec, durSec);
-  } else {
-    await encodeShortsSafeClipFromBytes(ff, mp4, clipName, durSec);
-  }
-  const safe = await readValidMp4(ff, clipName, clipIndex);
-  const safeMeta = await probeMp4Meta(safe);
-  if (!isVerticalShortMeta(safeMeta)) throw new Error(`Clip ${clipIndex} is still not vertical 9:16 after conversion; upload stopped.`);
-  return safe;
 }
 
 // Fast enhancement pass. The important speed trick is that this runs from an
@@ -412,11 +298,9 @@ async function encodeFastPolishedClipFromShort(
     "fade=t=in:st=0:d=0.18",
     `fade=t=out:st=${fadeOut}:d=0.35`,
   ].join(",");
-  const vf = `${verticalCenterGraph(720, 1280, 18)},${tail}`;
-  const code = await execWithBrowserBudget(ff, [
+  const vf = `${verticalCenterGraph(1080, 1920)},${tail}`;
+  const code = await ff.exec([
     "-y",
-    "-fflags", "+genpts+igndts+discardcorrupt",
-    "-err_detect", "ignore_err",
     "-i", inputClipName,
     "-vf", vf,
     "-c:v", "libx264",
@@ -429,10 +313,10 @@ async function encodeFastPolishedClipFromShort(
     "-b:a", "160k",
     "-ac", "2",
     "-af", `acompressor=threshold=-18dB:ratio=2.2:attack=12:release=120,alimiter=limit=0.96,afade=t=in:st=0:d=0.12,afade=t=out:st=${fadeOut}:d=0.35`,
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ], Math.min(60, Math.max(12, durSec * 1.2)), `Fast polish for ${clipName}`);
+  ]);
   if (code !== 0) throw new Error(`fast polish exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -446,7 +330,7 @@ async function encodePolishedClip(
   durSec: number,
 ) {
   const vf = polishFilter(durSec, 1080, 1920);
-  const code = await execWithBrowserBudget(ff, [
+  const code = await ff.exec([
     "-y",
     "-ss", String(startSec),
     "-i", inputName,
@@ -462,10 +346,10 @@ async function encodePolishedClip(
     "-b:a", "128k",
     "-ac", "2",
     "-af", "afade=t=in:st=0:d=0.25,afade=t=out:st=" + Math.max(durSec - 0.4, 0.1).toFixed(2) + ":d=0.4",
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+    "-movflags", "+faststart",
     "-threads", "0",
     clipName,
-  ], Math.min(120, Math.max(25, durSec * 1.8)), `Polish encode for ${clipName}`);
+  ]);
   if (code !== 0) throw new Error(`polish encode exit ${code}: ${ffmpegLogTail()}`);
 }
 
@@ -501,8 +385,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
   notify({ stage: "reading-file", message: `Loading ${(file.size / 1024 / 1024).toFixed(1)}MB into ffmpeg…` });
   const inputName = "input.mp4";
-  const inputBytes = await fetchFile(file);
-  await ff.writeFile(inputName, inputBytes);
+  await ff.writeFile(inputName, await fetchFile(file));
 
   const windows = pickWindows(duration, opts.clipLength, opts.maxClips);
   const total = windows.length;
@@ -534,7 +417,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
       const dur = w.end - w.start;
       const instantName = `clip${i + 1}_instant.mp4`;
       const polishedName = `clip${i + 1}_polished.mp4`;
-      const shortsName = `clip${i + 1}_shorts_safe.mp4`;
       let mp4: Uint8Array | null = null;
       const elapsed = (Date.now() - startedAt) / 1000;
       const remainingBudget = hardBudgetSec - elapsed;
@@ -564,17 +446,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
             message: `Source codec needs conversion. Using ultrafast MP4 compatibility encode for clip ${i + 1}…`,
           });
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
-          try {
-            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
-          } catch (compatErr) {
-            if (abortReason === "Cancelled by user") throw compatErr;
-            console.warn("[splitter] 720p compatibility encode failed, retrying tiny safe encode", compatErr);
-            activeAbort = false;
-            abortReason = null;
-            ff = await getFFmpeg();
-            await ff.writeFile(inputName, inputBytes);
-            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
-          }
+          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
         }
         mp4 = await readValidMp4(ff, instantName, i + 1);
 
@@ -618,12 +490,7 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
               activeAbort = false;
               abortReason = null;
               ff = await getFFmpeg();
-              await ff.writeFile(inputName, inputBytes);
-            } else {
-              ffmpegInstance = null;
-              try { ff.terminate(); } catch { /* noop */ }
-              ff = await getFFmpeg();
-              await ff.writeFile(inputName, inputBytes);
+              await ff.writeFile(inputName, await fetchFile(file));
             }
           }
         } else {
@@ -648,40 +515,17 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
           activeAbort = false;
           abortReason = null;
           ff = await getFFmpeg();
-          await ff.writeFile(inputName, inputBytes);
+          await ff.writeFile(inputName, await fetchFile(file));
         }
         try {
           await cutClipFastCopyFromFile(ff, inputName, instantName, w.start, dur);
         } catch {
           try { await ff.deleteFile(instantName); } catch { /* noop */ }
-          try {
-            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
-          } catch (compatErr) {
-            if (abortReason === "Cancelled by user") throw compatErr;
-            activeAbort = false;
-            abortReason = null;
-            ff = await getFFmpeg();
-            await ff.writeFile(inputName, inputBytes);
-            await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur, 360, 640, 10);
-          }
+          await encodeCompatibilityClip(ff, inputName, instantName, w.start, dur);
         }
         mp4 = await readValidMp4(ff, instantName, i + 1);
       }
       if (!mp4) throw new Error(`Generated clip ${i + 1} is missing after encode.`);
-      try {
-        mp4 = await ensureVerticalShortMp4(ff, mp4, shortsName, dur, i + 1, { inputName, startSec: w.start });
-      } catch (err) {
-        if (abortReason === "Cancelled by user") throw err;
-        console.warn("[splitter] 720p vertical encode failed, retrying tiny safe encode", err);
-        activeAbort = false;
-        abortReason = null;
-        ff = await getFFmpeg();
-        await ff.writeFile(inputName, inputBytes);
-        await encodeCompatibilityClip(ff, inputName, shortsName, w.start, dur, 360, 640, 10);
-        mp4 = await readValidMp4(ff, shortsName, i + 1);
-        const tinyMeta = await probeMp4Meta(mp4);
-        if (!isVerticalShortMeta(tinyMeta)) throw new Error(`Clip ${i + 1} could not be converted to vertical Shorts format.`);
-      }
 
       const { jpg, frames } = await makeThumbnailFromMp4(mp4);
       results.push({
@@ -698,7 +542,6 @@ export async function splitVideoInBrowser(file: File, opts: SplitOptions): Promi
 
       try { await ff.deleteFile(instantName); } catch { /* noop */ }
       try { await ff.deleteFile(polishedName); } catch { /* noop */ }
-      try { await ff.deleteFile(shortsName); } catch { /* noop */ }
     }
   } finally {
     ff.off("progress", onProgress);
@@ -744,10 +587,11 @@ export async function upscaleClipTo4K(
     // fast_bilinear scale (~5x faster than lanczos in wasm) + strong unsharp
     // restores lanczos-equivalent perceived sharpness at a fraction of the CPU.
     const vf = [
-      verticalCenterGraph(2160, 3840),
+      "scale=2160:3840:flags=fast_bilinear:force_original_aspect_ratio=increase",
+      "crop=2160:3840",
       "unsharp=5:5:1.0:5:5:0.0",
     ].join(",");
-    const code = await execWithBrowserBudget(ff, [
+    const code = await ff.exec([
       "-y",
       "-i", inName,
       "-vf", vf,
@@ -760,10 +604,10 @@ export async function upscaleClipTo4K(
       "-bufsize", "26M",
       "-pix_fmt", "yuv420p",
       "-c:a", "copy",
-    "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+      "-movflags", "+faststart",
       "-threads", "0",
       outName,
-    ], maxSeconds, "4K upgrade");
+    ]);
     if (code !== 0) throw new Error(`4K upscale exit ${code}: ${ffmpegLogTail()}`);
     assertNotAborted();
 

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
+import { createClientOnlyFn, useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "@/components/ui/card";
@@ -15,22 +15,32 @@ import { toast } from "sonner";
 import { Scissors, UploadCloud, Loader2, Trash2, RefreshCw, Sparkles, Zap, Wand2, CheckCircle2 } from "lucide-react";
 import {
   createLongVideoUploadUrl,
+  createClipUploadUrls,
   queueClip4KUpgrade,
-  markLongVideoUploaded,
-  markLongVideoFailed,
-  queueLongVideoNative,
-  retryLongVideoNative,
+  markLongVideoQueued,
   listLongVideos,
   listClipsForLongVideo,
   deleteLongVideo,
+  registerSplitClip,
+  finishSplitJob,
 } from "@/lib/splitter.functions";
 import { OneClickPublishButton } from "@/components/OneClickPublishButton";
 import { ClipProgress } from "@/components/ClipProgress";
 import { BulkPublishPanel } from "@/components/BulkPublishPanel";
-import type { ClipProgress as ClipProgressData } from "@/lib/ffmpeg-splitter.types";
+import type { ClipProgress as ClipProgressData, ClipResult, SplitOptions } from "@/lib/ffmpeg-splitter.types";
 
 
 export const Route = createFileRoute("/_authenticated/split")({ component: SplitPage });
+
+const runBrowserSplitter = createClientOnlyFn((file: File, opts: SplitOptions) =>
+  import("@/lib/ffmpeg-splitter.client").then(({ splitVideoInBrowser }) =>
+    splitVideoInBrowser(file, opts),
+  ),
+);
+
+const cancelBrowserSplitter = createClientOnlyFn(() =>
+  import("@/lib/ffmpeg-splitter.client").then(({ cancelSplitVideoInBrowser }) => cancelSplitVideoInBrowser()),
+);
 
 type ClipMeta = {
   clipId: string;
@@ -41,19 +51,21 @@ type ClipMeta = {
 function SplitPage() {
   const qc = useQueryClient();
   const createFn = useServerFn(createLongVideoUploadUrl);
-  const markUploadedFn = useServerFn(markLongVideoUploaded);
-  const markFailedFn = useServerFn(markLongVideoFailed);
-  const queueNativeFn = useServerFn(queueLongVideoNative);
-  const retryNativeFn = useServerFn(retryLongVideoNative);
+  const clipUrlFn = useServerFn(createClipUploadUrls);
+  const queueFn = useServerFn(markLongVideoQueued);
   const listFn = useServerFn(listLongVideos);
   const clipsFn = useServerFn(listClipsForLongVideo);
   const deleteFn = useServerFn(deleteLongVideo);
+  const registerFn = useServerFn(registerSplitClip);
+  const finishFn = useServerFn(finishSplitJob);
   const queue4kFn = useServerFn(queueClip4KUpgrade);
 
   const [file, setFile] = useState<File | null>(null);
   const [clipLength, setClipLength] = useState(55);
   const [maxClips, setMaxClips] = useState(5);
   const [smart4k, setSmart4k] = useState(false);
+  const [polish, setPolish] = useState(true);
+  const [backupSource, setBackupSource] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [progress, setProgress] = useState<ClipProgressData | null>(null);
@@ -64,15 +76,14 @@ function SplitPage() {
   const { data: jobs } = useQuery({
     queryKey: ["long-videos"],
     queryFn: () => listFn(),
-    refetchInterval: 5_000,
+    refetchInterval: 15_000,
   });
   const { data: clips } = useQuery({
     queryKey: ["long-clips", selectedId],
     queryFn: () => (selectedId ? clipsFn({ data: { longVideoId: selectedId } }) : Promise.resolve([])),
     enabled: !!selectedId,
-    refetchInterval: 4_000,
+    refetchInterval: 8_000,
   });
-  const selectedJob = jobs?.find((j) => j.id === selectedId);
 
   const delMut = useMutation({
     mutationFn: (id: string) => deleteFn({ data: { longVideoId: id } }),
@@ -97,7 +108,6 @@ function SplitPage() {
     let attempt = 0;
     while (attempt < 3) {
       const startedAt = Date.now();
-      let lastProgressAt = Date.now();
       try {
         await new Promise<void>((resolve, reject) => {
           const payload = new FormData();
@@ -107,28 +117,18 @@ function SplitPage() {
           xhr.open("PUT", signedUrl, true);
           xhr.timeout = 10 * 60 * 1000;
           xhr.setRequestHeader("x-upsert", "true");
-          const progressWatch = window.setInterval(() => {
-            if (Date.now() - lastProgressAt > 45_000) {
-              xhr.abort();
-              window.clearInterval(progressWatch);
-              reject(new Error("Upload stalled without progress. Retrying safely."));
-            }
-          }, 5_000);
           xhr.upload.onprogress = (e) => {
-            lastProgressAt = Date.now();
             const loaded = e.lengthComputable ? e.loaded : 0;
             const total = e.lengthComputable ? e.total : totalBytes;
             const secs = Math.max((Date.now() - startedAt) / 1000, 0.1);
             onProgress?.(loaded, total, loaded / 1024 / 1024 / secs);
           };
           xhr.onload = () => {
-            window.clearInterval(progressWatch);
             if (xhr.status >= 200 && xhr.status < 300) resolve();
             else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText || "upload failed"}`));
           };
-          xhr.onerror = () => { window.clearInterval(progressWatch); reject(new Error("Network error during upload")); };
-          xhr.ontimeout = () => { window.clearInterval(progressWatch); reject(new Error("Upload timed out")); };
-          xhr.onabort = () => { window.clearInterval(progressWatch); reject(new Error("Upload was interrupted before completion")); };
+          xhr.onerror = () => reject(new Error("Network error during upload"));
+          xhr.ontimeout = () => reject(new Error("Upload timed out"));
           xhr.send(payload);
         });
         return;
@@ -201,49 +201,114 @@ function SplitPage() {
       setSelectedId(info.longVideoId);
       qc.invalidateQueries({ queryKey: ["long-videos"] });
 
-      const startedAt = Date.now();
-      setProgress({
-        index: 0, total: maxClips, stage: "uploading", percent: 1, clipPercent: 1,
-        etaSeconds: null, elapsedSeconds: 0, fps: null, uploadMBps: null, updatedAt: Date.now(),
-        message: "Uploading source video before native cinematic splitting starts…",
-      });
-      await uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total, mbps) => {
-        const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
-        setUploadPct(pct);
-        setProgress({
-          index: 0, total: maxClips, stage: "uploading", percent: pct, clipPercent: pct,
-          etaSeconds: mbps > 0 ? Math.round(((total - loaded) / 1024 / 1024) / mbps) : null,
-          elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-          fps: null, uploadMBps: mbps, uploadedBytes: loaded, totalBytes: total, updatedAt: Date.now(),
-          message: "Uploading source video for the native splitter…",
-        });
-      });
-      setUploadPct(100);
-      await markUploadedFn({ data: { longVideoId: info.longVideoId } });
+      const uploadPromise = backupSource
+        ? uploadSigned(info.signedUrl, file, file.type || "video/mp4", (loaded, total) => {
+            const pct = Math.max(1, Math.min(99, Math.round((loaded / Math.max(total, 1)) * 100)));
+            setUploadPct(pct);
+          }).then(() => setUploadPct(100)).catch((err) => console.warn("[source-upload] failed", err))
+        : Promise.resolve();
 
-      setProgress({
-        index: 0, total: maxClips, stage: "encoding", percent: 15, clipPercent: 0,
-        etaSeconds: null, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000), fps: null, uploadMBps: null, updatedAt: Date.now(),
-        message: "Source upload confirmed. Queueing native cinematic splitter…",
+      // Kick backend queue marker in parallel; don't wait.
+      queueFn({ data: { longVideoId: info.longVideoId } }).catch(() => {});
+
+      const uploadTasks: Promise<{ ok: true } | { ok: false; error: Error }>[] = [];
+
+      const uploadClip = async (clip: ClipResult) => {
+        const uploadInfo = await clipUrlFn({ data: { longVideoId: info.longVideoId, clipIndex: clip.index } });
+        const clipBytes = clip.mp4.byteLength;
+        const thumbBytes = clip.thumbnailJpg.byteLength;
+        const totalBytes = clipBytes + thumbBytes;
+        let videoLoaded = 0;
+        let thumbLoaded = 0;
+        const startedAt = Date.now();
+        const updateUploadProgress = (message: string, mbps: number) => {
+          const loaded = videoLoaded + thumbLoaded;
+          setProgress({
+            index: clip.index, total: maxClips, stage: "uploading",
+            percent: Math.max(1, Math.min(99, Math.round((loaded / Math.max(totalBytes, 1)) * 100))),
+            clipPercent: Math.max(1, Math.min(100, Math.round((loaded / Math.max(totalBytes, 1)) * 100))),
+            etaSeconds: mbps > 0 ? Math.round(((totalBytes - loaded) / 1024 / 1024) / mbps) : null,
+            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+            fps: null, uploadMBps: mbps, uploadedBytes: loaded, totalBytes, updatedAt: Date.now(),
+            message,
+          });
+        };
+
+        await Promise.all([
+          uploadSigned(uploadInfo.videoSignedUrl, clip.mp4, "video/mp4", (loaded, _total, mbps) => {
+            videoLoaded = loaded;
+            updateUploadProgress(`Uploading clip ${clip.index} video…`, mbps);
+          }),
+          uploadSigned(uploadInfo.thumbnailSignedUrl, clip.thumbnailJpg, "image/jpeg", (loaded, _total, mbps) => {
+            thumbLoaded = loaded;
+            updateUploadProgress(`Uploading clip ${clip.index} thumbnail…`, mbps);
+          }),
+        ]);
+
+        await registerFn({ data: {
+          clipId: uploadInfo.clipId,
+          longVideoId: info.longVideoId,
+          videoStoragePath: uploadInfo.videoPath,
+          thumbnailStoragePath: uploadInfo.thumbnailPath,
+          title: clip.title,
+          description: `Auto-cut from long-form video (${Math.round(clip.startSeconds)}s–${Math.round(clip.endSeconds)}s).\n\n#shorts #shortsfeed`,
+          tags: ["shorts", "shorts fyp", "clip", "highlight"],
+          hashtags: ["#shorts", "#shortsfeed", "#viral", "#fyp"],
+          startSeconds: clip.startSeconds,
+          endSeconds: clip.endSeconds,
+          durationSeconds: clip.endSeconds - clip.startSeconds,
+          fileSizeBytes: clip.mp4.byteLength,
+        } });
+
+        setClipMeta((m) => ({
+          ...m,
+          [uploadInfo.clipId]: {
+            clipId: uploadInfo.clipId,
+            frames: clip.frames,
+            upscale: { state: smart4k ? "idle" : "done", pct: smart4k ? 0 : 100 },
+          },
+        }));
+        qc.invalidateQueries({ queryKey: ["long-clips", info.longVideoId] });
+      };
+
+      // Start splitting IMMEDIATELY from the local File — no need to wait for upload.
+      const results = await runBrowserSplitter(file, {
+        clipLength,
+        maxClips,
+        resolution: smart4k ? "4k-smart" : "hd",
+        polish,
+        onProgress: setProgress,
+        maxProcessingSeconds: 290,
+        onClip: (clip) => {
+          const task = uploadClip(clip)
+            .then(() => ({ ok: true }) as const)
+            .catch((error: Error) => ({ ok: false, error }) as const);
+          uploadTasks.push(task);
+        },
       });
-      const queued = await queueNativeFn({ data: { longVideoId: info.longVideoId } });
+
+      // Let background upload finish quietly, but never block the UI on it.
+      uploadPromise.catch(() => {});
+      const uploadResults = await Promise.all(uploadTasks);
+      const uploadFailure = uploadResults.find((r) => !r.ok);
+      if (uploadFailure && !uploadFailure.ok) throw uploadFailure.error;
+
+      await finishFn({ data: { longVideoId: info.longVideoId, status: "ready" } });
       qc.invalidateQueries({ queryKey: ["long-videos"] });
       setProgress({
-        index: 0, total: maxClips, stage: "done", percent: 100, clipPercent: 100,
-        etaSeconds: 0, elapsedSeconds: Math.round((Date.now() - startedAt) / 1000), fps: null, uploadMBps: null, updatedAt: Date.now(),
-        message: queued.dispatchOk
-          ? "Native cinematic splitter started. Clips will appear automatically as each one is uploaded."
-          : `Queued. Scheduled worker will pick it up within ~5 minutes. (${queued.message || "dispatch failed"})`,
+        index: results.length, total: results.length, stage: "done",
+        percent: 100, clipPercent: 100, etaSeconds: 0, fps: null, uploadMBps: null,
+        message: `✅ ${results.length} clip${results.length === 1 ? "" : "s"} ready. AI titles generate on publish.`,
       });
-      if (queued.dispatchOk) toast.success("Native cinematic splitter started");
-      else toast.warning(queued.message || "Dispatch failed — scheduler will retry within ~5 min");
+      toast.success(`Generated ${results.length} short${results.length === 1 ? "" : "s"}`);
       setFile(null);
+
+      if (smart4k) toast.info("HD clips are ready. Use Upgrade 4K per clip so nothing stalls.");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Split failed";
       toast.error(msg);
       if (longVideoId) {
-        try { await markFailedFn({ data: { longVideoId, errorMessage: msg, retryable: true, failureCode: "upload_or_queue_failed" } }); } catch { /* noop */ }
-        qc.invalidateQueries({ queryKey: ["long-videos"] });
+        try { await finishFn({ data: { longVideoId, status: "failed", errorMessage: msg } }); } catch { /* noop */ }
       }
       setProgress((p) => p ? { ...p, stage: "error", message: msg } : null);
     } finally {
@@ -310,9 +375,9 @@ function SplitPage() {
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
               <div className="min-w-0">
                 <Label className="flex items-center gap-1"><Wand2 className="h-3.5 w-3.5 text-primary-glow" /> Cinematic polish</Label>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Always applied by the native worker with safe timeouts and automatic retry.</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Fast color/sharpen polish with a 5-minute safety budget. Falls back to instant HD if slow.</p>
               </div>
-              <Badge variant="secondary">Native</Badge>
+              <Switch checked={polish} onCheckedChange={setPolish} />
             </div>
 
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
@@ -323,10 +388,18 @@ function SplitPage() {
               <Switch checked={smart4k} onCheckedChange={setSmart4k} />
             </div>
 
-            {busy && uploadPct > 0 && uploadPct < 100 && (
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/30 p-3">
+              <div className="min-w-0">
+                <Label>Backup source video</Label>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Off by default for speed. Clips still save normally.</p>
+              </div>
+              <Switch checked={backupSource} onCheckedChange={setBackupSource} />
+            </div>
+
+            {busy && backupSource && uploadPct > 0 && uploadPct < 100 && (
               <div className="space-y-1">
                 <Progress value={uploadPct} className="h-2" />
-                <p className="text-xs text-muted-foreground">Uploading source… {uploadPct}%</p>
+                <p className="text-xs text-muted-foreground">Backing up source in background… {uploadPct}% (splitting has already started, you don't need to wait)</p>
               </div>
             )}
 
@@ -339,8 +412,8 @@ function SplitPage() {
               {busy ? "Working…" : "Create Shorts"}
             </Button>
             {busy && (
-              <Button variant="outline" disabled className="w-full">
-                Native queue protected from browser tab closes
+              <Button variant="outline" onClick={() => cancelBrowserSplitter()} className="w-full">
+                Stop current render
               </Button>
             )}
           </div>
@@ -365,15 +438,7 @@ function SplitPage() {
               variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
             >
               <AnimatePresence>
-                {jobs.map((j) => {
-                  const heartbeatAgeSec = j.last_progress_at
-                    ? Math.round((Date.now() - new Date(j.last_progress_at).getTime()) / 1000)
-                    : null;
-                  const isActive = j.status === "queued" || j.status === "uploaded" || j.status === "processing";
-                  const isStalled = isActive && heartbeatAgeSec !== null && heartbeatAgeSec > 120;
-                  const displayStatus = isStalled ? "recovering" : j.status;
-                  const canRetry = j.status === "failed_retryable" || isStalled;
-                  return (
+                {jobs.map((j) => (
                   <motion.li
                     key={j.id}
                     layout
@@ -390,39 +455,15 @@ function SplitPage() {
                       <div className="truncate font-medium">{j.original_filename || j.id}</div>
                       <div className="text-xs text-muted-foreground">
                         {j.clip_length}s × up to {j.max_clips} · {j.clips_generated} clip(s) generated
-                        {typeof j.progress_percent === "number" ? ` · ${j.progress_percent}%` : ""}
-                        {j.progress_stage ? ` · ${j.progress_stage.slice(0, 60)}` : ""}
-                        {isStalled ? ` · no heartbeat for ${heartbeatAgeSec}s` : ""}
                         {j.error_message ? ` · ${j.error_message.slice(0, 80)}` : ""}
                       </div>
-                      {j.status !== "ready" && j.status !== "failed_final" && (
-                        <Progress value={Math.max(0, Math.min(100, j.progress_percent ?? 0))} className="mt-2 h-1.5" />
-                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge
-                        variant={j.status === "ready" ? "default" : (j.status.includes("failed") || isStalled) ? "destructive" : "secondary"}
+                        variant={j.status === "ready" ? "default" : j.status === "failed" ? "destructive" : "secondary"}
                       >
-                        {displayStatus}
+                        {j.status}
                       </Badge>
-                      {canRetry && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            try {
-                              await retryNativeFn({ data: { longVideoId: j.id } });
-                              toast.success("Retry queued");
-                              qc.invalidateQueries({ queryKey: ["long-videos"] });
-                            } catch (err) {
-                              toast.error(err instanceof Error ? err.message : "Retry failed");
-                            }
-                          }}
-                        >
-                          Retry
-                        </Button>
-                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -432,8 +473,7 @@ function SplitPage() {
                       </Button>
                     </div>
                   </motion.li>
-                  );
-                })}
+                ))}
               </AnimatePresence>
             </motion.ul>
           )}
@@ -481,9 +521,8 @@ function SplitPage() {
                       const dbProgress = c.generation_progress ?? 0;
                       const isNative4k = dbStage.toLowerCase().includes("4k");
                       const db4kFailed = dbStage.toLowerCase().includes("4k failed");
-                      const db4kQueued = dbStage.toLowerCase().includes("4k upgrade queued");
                       const upscaleState = meta?.upscale || (isNative4k
-                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : db4kQueued ? "queued" as const : "running" as const, pct: dbProgress }
+                        ? { state: db4kFailed ? "failed" as const : dbProgress >= 100 ? "done" as const : "running" as const, pct: dbProgress }
                         : undefined);
                       return (
                         <motion.div

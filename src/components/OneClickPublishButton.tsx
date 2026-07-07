@@ -3,9 +3,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Loader2, Youtube, Wand2, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
-import { commitShortsSafeVideo, createShortsSafeVideoUploadUrl, uploadVideoToYouTube } from "@/lib/media.functions";
+import { uploadVideoToYouTube } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
-import { loadShortsSafeTools } from "@/lib/shorts-safe-loader";
 
 type OneClickVideo = {
   id: string;
@@ -26,14 +25,12 @@ export function OneClickPublishButton({ video, hint, frames, onUploaded, size = 
   label?: string;
 }) {
   const upload = useServerFn(uploadVideoToYouTube);
-  const createSafeUpload = useServerFn(createShortsSafeVideoUploadUrl);
-  const commitSafeUpload = useServerFn(commitShortsSafeVideo);
   const seo = useServerFn(generateShortSEO);
   const [stage, setStage] = useState<"idle" | "seo" | "uploading" | "done">(
     video.youtube_video_id ? "done" : "idle",
   );
   const [url, setUrl] = useState<string | null>(
-    video.youtube_video_id ? `https://www.youtube.com/shorts/${video.youtube_video_id}` : null,
+    video.youtube_video_id ? `https://www.youtube.com/watch?v=${video.youtube_video_id}` : null,
   );
 
   const run = async () => {
@@ -45,19 +42,6 @@ export function OneClickPublishButton({ video, hint, frames, onUploaded, size = 
       } });
 
       setStage("uploading");
-      const safeInfo = await createSafeUpload({ data: { videoId: video.id } });
-      const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await loadShortsSafeTools();
-      const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
-      const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
-      if (safe.changed) {
-        await uploadSignedMp4(safeInfo.uploadSignedUrl, safe.bytes);
-        await commitSafeUpload({ data: {
-          videoId: video.id,
-          videoStoragePath: safeInfo.videoStoragePath,
-          fileSizeBytes: safe.bytes.byteLength,
-          durationSeconds: safe.durationSeconds,
-        } });
-      }
       const result = await upload({ data: {
         videoId: video.id,
         title: meta.title,

@@ -35,9 +35,6 @@ export const createLongVideoUploadUrl = createServerFn({ method: "POST" })
         clip_length: data.clipLength,
         max_clips: data.maxClips,
         status: "uploading",
-        upload_started_at: new Date().toISOString(),
-        progress_percent: 1,
-        progress_stage: "Waiting for source upload",
       } as never)
       .select("*")
       .single();
@@ -51,64 +48,6 @@ export const createLongVideoUploadUrl = createServerFn({ method: "POST" })
     };
   });
 
-export const markLongVideoUploaded = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const now = new Date().toISOString();
-    const { error } = await supabaseAdmin
-      .from("long_videos")
-      .update({
-        status: "uploaded",
-        upload_completed_at: now,
-        last_progress_at: now,
-        progress_percent: 12,
-        progress_stage: "Source upload complete",
-        error_message: null,
-        failure_code: null,
-      } as never)
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
-    try {
-      await supabaseAdmin.rpc("log_long_video_event", {
-        _long_video_id: data.longVideoId,
-        _user_id: context.userId,
-        _event_type: "uploaded",
-        _message: "Source upload completed",
-        _detail: {},
-      } as never);
-    } catch { /* logging is best-effort */ }
-    return { ok: true };
-  });
-
-export const markLongVideoFailed = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({
-    longVideoId: z.string().uuid(),
-    errorMessage: z.string().min(1).max(2000),
-    retryable: z.boolean().default(true),
-    failureCode: z.string().max(80).optional(),
-  }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { error } = await supabaseAdmin
-      .from("long_videos")
-      .update({
-        status: data.retryable ? "failed_retryable" : "failed_final",
-        error_message: data.errorMessage.slice(0, 1000),
-        failure_code: data.failureCode ?? (data.retryable ? "retryable_failure" : "final_failure"),
-        progress_stage: "Failed",
-        locked_at: null,
-        locked_by: null,
-      } as never)
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
-    return { ok: true };
-  });
-
 export const markLongVideoQueued = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
@@ -116,111 +55,11 @@ export const markLongVideoQueued = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("long_videos")
-      .update({
-        status: "queued",
-        error_message: null,
-        failure_code: null,
-        progress_percent: 15,
-        progress_stage: "Queued for native cinematic splitter",
-        last_progress_at: new Date().toISOString(),
-        locked_at: null,
-        locked_by: null,
-      } as never)
+      .update({ status: "processing", error_message: null } as never)
       .eq("id", data.longVideoId)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
     return { ok: true };
-  });
-
-export const queueLongVideoNative = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: job, error: jobErr } = await supabaseAdmin
-      .from("long_videos")
-      .select("id,user_id,source_path")
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId)
-      .maybeSingle();
-    if (jobErr) throw new Error(jobErr.message);
-    if (!job?.source_path) throw new Error("Long video source is missing. Upload the source before using the native splitter.");
-
-    const { error } = await supabaseAdmin
-      .from("long_videos")
-      .update({
-        status: "queued",
-        error_message: null,
-        failure_code: null,
-        clips_generated: 0,
-        attempt_count: 0,
-        progress_percent: 15,
-        progress_stage: "Queued for native cinematic splitter",
-        last_progress_at: new Date().toISOString(),
-        locked_at: null,
-        locked_by: null,
-      } as never)
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
-
-    try {
-      const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
-      const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
-      return {
-        ok: true,
-        dispatchOk: dispatch.ok,
-        message: dispatch.ok ? "Native splitter started" : dispatch.message,
-        latestRunUrl: dispatch.latestRunUrl ?? null,
-      };
-    } catch (err) {
-      return {
-        ok: true,
-        dispatchOk: false,
-        message: err instanceof Error ? err.message : "Native splitter queued; scheduled worker will retry.",
-        latestRunUrl: null,
-      };
-    }
-  });
-
-export const retryLongVideoNative = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: job, error: jobErr } = await supabaseAdmin
-      .from("long_videos")
-      .select("id,user_id,source_path,status")
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId)
-      .maybeSingle();
-    if (jobErr) throw new Error(jobErr.message);
-    if (!job?.source_path) throw new Error("Long video source is missing. Upload the source again.");
-
-    const { error } = await supabaseAdmin
-      .from("long_videos")
-      .update({
-        status: "queued",
-        error_message: null,
-        failure_code: null,
-        attempt_count: 0,
-        progress_percent: 15,
-        progress_stage: "Retry queued for native splitter",
-        last_progress_at: new Date().toISOString(),
-        locked_at: null,
-        locked_by: null,
-      } as never)
-      .eq("id", data.longVideoId)
-      .eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
-
-    try {
-      const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
-      const dispatch = await triggerSplitterWorkflow({ longVideoId: data.longVideoId });
-      return { ok: true, dispatchOk: dispatch.ok, message: dispatch.message, latestRunUrl: dispatch.latestRunUrl ?? null };
-    } catch (err) {
-      return { ok: true, dispatchOk: false, message: err instanceof Error ? err.message : "Retry queued; scheduled worker will pick it up.", latestRunUrl: null };
-    }
   });
 
 export const createClipUploadUrls = createServerFn({ method: "POST" })
@@ -277,6 +116,12 @@ export const queueClip4KUpgrade = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     if (!clip?.video_storage_path) throw new Error("Clip not found or missing storage path");
 
+    await supabaseAdmin
+      .from("videos")
+      .update({ generation_stage: "Native 4K upgrade queued", generation_progress: 5 } as never)
+      .eq("id", data.clipId)
+      .eq("user_id", context.userId);
+
     const { triggerSplitterWorkflow } = await import("@/lib/github-dispatch.server");
     const dispatch = await triggerSplitterWorkflow({ clipId: data.clipId });
     if (!dispatch.ok) {
@@ -287,11 +132,6 @@ export const queueClip4KUpgrade = createServerFn({ method: "POST" })
         .eq("user_id", context.userId);
       throw new Error(dispatch.message);
     }
-    await supabaseAdmin
-      .from("videos")
-      .update({ generation_stage: "Native 4K upgrade queued", generation_progress: 5 } as never)
-      .eq("id", data.clipId)
-      .eq("user_id", context.userId);
     return { ok: true, latestRunUrl: dispatch.latestRunUrl ?? null };
   });
 
@@ -339,8 +179,8 @@ export const registerSplitClip = createServerFn({ method: "POST" })
       thumbnail_storage_path: data.thumbnailStoragePath,
       duration_seconds: Math.round(data.durationSeconds),
       file_size_bytes: data.fileSizeBytes,
-        clip_start_seconds: data.startSeconds,
-        clip_end_seconds: data.endSeconds,
+      clip_start_seconds: data.startSeconds,
+      clip_end_seconds: data.endSeconds,
       generation_progress: 100,
       generation_stage: "Split in your browser",
     } as never);
@@ -383,7 +223,7 @@ export const listLongVideos = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const { data, error } = await context.supabase
       .from("long_videos")
-      .select("id,original_filename,duration_seconds,clip_length,max_clips,status,error_message,failure_code,clips_generated,created_at,updated_at,upload_started_at,upload_completed_at,processing_started_at,last_progress_at,completed_at,attempt_count,progress_percent,progress_stage,locked_at,locked_by")
+      .select("id,original_filename,duration_seconds,clip_length,max_clips,status,error_message,clips_generated,created_at")
       .eq("user_id", context.userId)
       .order("created_at", { ascending: false })
       .limit(30);
@@ -397,49 +237,10 @@ export const listClipsForLongVideo = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { data: rows, error } = await context.supabase
       .from("videos")
-      .select("id,title,description,tags,hashtags,video_url,thumbnail_url,youtube_video_id,duration_seconds,clip_start_seconds,clip_end_seconds,clip_index,status,generation_stage,generation_progress,last_progress_at,created_at")
+      .select("id,title,description,tags,hashtags,video_url,thumbnail_url,youtube_video_id,duration_seconds,clip_start_seconds,clip_end_seconds,status,generation_stage,generation_progress,created_at")
       .eq("user_id", context.userId)
       .eq("long_video_id", data.longVideoId)
-      .order("clip_index", { ascending: true, nullsFirst: false })
       .order("clip_start_seconds", { ascending: true });
-    if (error) throw new Error(error.message);
-    return rows ?? [];
-  });
-
-export const getClipFreshUrls = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({ videoId: z.string().uuid() }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: video, error } = await supabaseAdmin
-      .from("videos")
-      .select("id,user_id,video_storage_path,thumbnail_storage_path,video_url,thumbnail_url")
-      .eq("id", data.videoId)
-      .eq("user_id", context.userId)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!video) throw new Error("Video not found");
-
-    const videoUrl = video.video_storage_path
-      ? (await supabaseAdmin.storage.from("videos").createSignedUrl(video.video_storage_path, 60 * 60 * 2)).data?.signedUrl
-      : video.video_url;
-    const thumbnailUrl = video.thumbnail_storage_path
-      ? (await supabaseAdmin.storage.from("thumbnails").createSignedUrl(video.thumbnail_storage_path, 60 * 60 * 2)).data?.signedUrl
-      : video.thumbnail_url;
-    return { videoUrl: videoUrl ?? null, thumbnailUrl: thumbnailUrl ?? null };
-  });
-
-export const listLongVideoEvents = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((raw: unknown) => z.object({ longVideoId: z.string().uuid() }).parse(raw))
-  .handler(async ({ data, context }) => {
-    const { data: rows, error } = await context.supabase
-      .from("long_video_events")
-      .select("id,event_type,message,detail,created_at")
-      .eq("user_id", context.userId)
-      .eq("long_video_id", data.longVideoId)
-      .order("created_at", { ascending: false })
-      .limit(30);
     if (error) throw new Error(error.message);
     return rows ?? [];
   });

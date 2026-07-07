@@ -1,114 +1,55 @@
-# Long Video → Shorts: Full Stability Rewrite
+## Goal
 
-The pipeline has been patched repeatedly and is now unreliable: jobs stall at 15%, UI shows contradictory states, and clips never appear. Rather than another patch, this plan replaces the fragile parts with a single deterministic path and verifies it end-to-end.
+Make shorts appear quickly, avoid stuck progress, and move cinematic polish / 4K enhancement into a bounded, visible workflow that finishes in minutes when possible and never blocks the user indefinitely.
 
-## 1. Root causes to eliminate
+## Reality constraint
 
-From auditing `src/routes/_authenticated/split.tsx`, `src/lib/splitter.functions.ts`, `src/lib/ffmpeg-splitter.client.ts`, `scripts/splitter-runner.mjs`, and `src/routes/api/public/splitter/*`:
+A true no-compromise 4K cinematic re-render in seconds cannot be guaranteed inside every browser tab, especially on slower devices. The reliable way to make this fast is to deliver an original-quality clip immediately, then run enhancement as a capped upgrade job with fallback and clear ETA instead of freezing for an hour.
 
-- **Two parallel processing paths** (browser FFmpeg + native worker) racing on the same job row → contradictory statuses.
-- **Client-driven status writes** (UI sets `queued`/`processing`/`ready` directly) competing with worker writes → "Done" while nothing was produced.
-- **No single owner of state**. `status`, `progress_percent`, `clips_generated`, and local UI state disagree.
-- **Worker dispatch is best-effort** (GitHub Actions ping with no confirmation). If the runner never boots, the job sits at 15% forever.
-- **No heartbeat enforcement on the client**. Stale detection exists in SQL but the UI never surfaces it, so users see "Processing" indefinitely.
-- **Signed URLs stored at creation time** expire, breaking Library preview/download and YouTube upload.
-- **YouTube upload has no Shorts-format preflight** on a fresh URL.
+## Plan
 
-## 2. Single deterministic state machine
+1. **Instant clip first**
+  - Always generate the first usable short via stream-copy cut first.
+  - This preserves original video/audio quality and should complete far faster than full re-encoding.
+  - Show the clip in the library immediately before any polish or 4K work starts.
+2. **Make Cinematic Polish a fast enhancement pass**
+  - Replace the slow “full cinematic” pipeline with a tiered polish ladder:
+    - **Speed Polish:** color, contrast, sharpness, fades, audio leveling, fast encode.
+    - **Premium Polish:** stronger effects only if the device/time budget allows.
+    - **Fallback:** keep the instant original-quality clip if polish exceeds the time budget.
+  - Add a hard per-clip timeout so polish cannot run for an hour.
+3. **Add enhancement system for “shock me” shorts**
+  - Add fast visual enhancement: saturation/contrast tuning, sharpen, vignette/light fade, smoother intro/outro.
+  - Add audio enhancement: normalize loudness, fade in/out, preserve source audio when re-encoding would slow too much.
+  - Add optional background song support as a separate enhancement stage only when an audio/music asset is available, so it does not block video generation.
+4. **Rework 4K upgrade**
+  - 4K will run only after the HD short is already ready.
+  - Show a separate 4K progress state with elapsed time, ETA, current phase, last progress event, and cancel/fallback.
+  - If 4K exceeds the time budget, keep the HD polished clip instead of failing or freezing.
+  - Use faster upscale settings first, then only attempt heavier quality settings when the remaining budget allows.
+5. **Prevent stuck states**
+  - Add stall detection for polish, 4K, and upload.
+  - If no progress arrives within a threshold, show exactly what is happening and automatically move to fallback/retry.
+  - Progress bar will include phase, clip number, elapsed time, ETA, last movement, upload speed, and latest processing log.
+6. **Speed up uploads**
+  - Upload each finished clip immediately instead of waiting for all processing.
+  - Upload thumbnail and video in parallel.
+  - Add retry/backoff and visible upload MB/s.
+  - Avoid uploading source backup unless explicitly enabled.
+7. **Reduce wasted credits**
+  - Do not call AI/SEO/music generation automatically during splitting.
+  - Only generate titles/music/SEO when the user clicks the related action or when a final clip is ready.
+8. **Validation**
+  - Test the local generation path in the browser with a small sample.
+  - Confirm instant clip output appears quickly.
+  - Confirm polish and 4K show ETA and either complete or safely fallback before the 5-minute cap.
 
-One column (`long_videos.status`) is the source of truth. Only these transitions are legal, and only the server writes them:
+## Expected result
 
-```text
-draft
-  └─(source upload confirmed)→ uploaded
-       └─(worker claim, atomic)→ processing
-            ├─(heartbeat < 90s, clip registered)→ processing
-            ├─(all clips verified)→ ready
-            ├─(worker error, attempts<3)→ failed_retryable ─(user retry)→ uploaded
-            └─(attempts≥3 OR fatal)→ failed_final
-```
+The app will prioritize “usable short in minutes” over waiting for a slow full render. Cinematic polish and 4K will become bounded upgrades with visible progress, not hour-long blocking operations.
 
-Rules:
-- Client can only move `draft → uploaded` (via a confirm endpoint after the storage upload finishes).
-- Only the worker (via `claim_next_long_video_job`) moves `uploaded → processing`.
-- Only `finish.tsx` moves to `ready` / `failed_*`, and only after verifying clips exist in storage and DB.
-- Any write outside these transitions is rejected server-side.
+&nbsp;
 
-## 3. Processing: native worker only
+&nbsp;
 
-Browser FFmpeg is removed from the production path entirely (kept only as a dev-only debug tool behind a flag). All jobs run on the GitHub Actions splitter runner. This ends the browser/native race, the memory crashes, and the "works on my machine" variance.
-
-- `split.tsx` uploads the source, calls `confirmSourceUpload`, and then only reads job state. It never runs FFmpeg, never writes status.
-- `scripts/splitter-runner.mjs` is the only producer of clips. It heartbeats every 15s, retries transient failures 3×, and always calls `finish` in a `finally`.
-- If the runner does not heartbeat within 90s of `processing`, `mark_stale_long_video_jobs` flips the job back to `failed_retryable` and the user (or auto-retry) requeues.
-
-## 4. Dispatch reliability
-
-- On `uploaded`, the server enqueues via GitHub Actions AND records `dispatched_at`.
-- A lightweight cron (pg_cron every minute) calls `/api/public/splitter/tick` to (a) recover stale processing jobs and (b) re-dispatch `uploaded` jobs older than 2 minutes with no worker claim.
-- This guarantees no job sits in `uploaded` forever because a webhook was lost.
-
-## 5. Fresh URLs everywhere
-
-- Remove reliance on stored signed URLs for playback/download/YouTube.
-- Add `getFreshClipUrl(clipId)` and `getFreshThumbUrl(clipId)` server functions that sign from `video_storage_path` on demand (24h TTL, generated at read time).
-- Library, download button, and YouTube upload all call these before use.
-
-## 6. YouTube Shorts preflight
-
-Before upload:
-1. Fetch fresh signed URL.
-2. `ffprobe` (server-side) to confirm `height > width`, `duration ≤ 60.5s`, H.264/AAC.
-3. If not conformant, run a single server-side normalize pass (native runner, not browser).
-4. Force `#Shorts` in title/description/tags.
-5. Resumable upload; write result to `videos.youtube_*` fields atomically.
-
-## 7. Verification gate before `ready`
-
-`finish.tsx` will only mark `ready` when, for the job:
-- `videos` row count ≥ 1 AND matches `clips_generated`.
-- Every clip row has non-null `video_storage_path` AND the object exists in storage (HEAD check).
-- Every clip has a thumbnail path that exists.
-- Each clip's `duration_seconds` ≤ 60 and aspect is 9:16 (recorded by runner via ffprobe).
-
-Otherwise → `failed_retryable` with a specific `failure_code`.
-
-## 8. UI: read-only, backend-driven
-
-`split.tsx` and `library.tsx` become pure views over the DB:
-- Subscribe via Supabase realtime to `long_videos` and `videos`.
-- Show `progress_stage`, `progress_percent`, and heartbeat age (`now - last_progress_at`). If age > 90s while `processing`, show "Recovering…" not "Processing".
-- Retry button only enabled on `failed_retryable`.
-- No local status state, no client-side FFmpeg, no optimistic writes.
-
-## 9. Automated end-to-end regression suite
-
-Add `scripts/e2e-splitter.mjs` runnable locally and in CI. It uses Playwright + fixture videos to run these scenarios sequentially and asserts final DB state:
-
-1. Small landscape MP4 (10s).
-2. Medium landscape (2min).
-3. Large landscape (10min).
-4. Already-vertical Shorts-shaped MP4.
-5. Three consecutive jobs.
-6. Retry after simulated worker crash (kill runner mid-job).
-7. Refresh browser mid-processing (state must survive).
-8. Interrupted upload (abort + resume).
-9. YouTube upload preflight on a non-conformant clip.
-
-Each scenario asserts: final `status='ready'`, expected clip count, all storage objects exist, fresh URLs return 200, thumbnails present, duration ≤ 60, aspect 9:16. Any failure blocks completion.
-
-## 10. Files changed
-
-- **DB migration**: add `dispatched_at`, `heartbeat_age_seconds` view, tighten status CHECK, add trigger rejecting illegal transitions.
-- **Rewrite**: `src/routes/_authenticated/split.tsx` (read-only), `src/lib/splitter.functions.ts` (add `confirmSourceUpload`, `retryJob`, `getFreshClipUrl`).
-- **Remove from prod path**: `src/lib/ffmpeg-splitter.client.ts`, `src/lib/shorts-safe.client.ts` usage in split flow.
-- **Harden**: `scripts/splitter-runner.mjs` (heartbeat loop, retries, ffprobe validation, finally-finish).
-- **Endpoints**: `tick.tsx` (add cron re-dispatch), `progress.tsx`, `complete.tsx` (idempotent), `finish.tsx` (verification gate), new `confirm-upload.tsx`.
-- **YouTube**: `src/lib/youtube-upload.server.ts` (fresh URL + ffprobe preflight + normalize).
-- **Library**: `src/routes/_authenticated/library.tsx` (fresh URLs, realtime).
-- **New**: `scripts/e2e-splitter.mjs` + fixtures under `scripts/fixtures/`.
-- **Cron**: pg_cron entry hitting `/api/public/splitter/tick` every minute.
-
-## 11. Completion criteria
-
-Marked done only when `scripts/e2e-splitter.mjs` passes all 9 scenarios twice in a row with zero manual intervention, and a manual run of one real user video produces a Shorts-format clip that uploads to YouTube successfully.
+Also there are getting error generating shorts now fix that also and you can 2 3 hours but i need fast genaration with no error and  properly excutes shorts test every corner of web and then give me output take lovable time for working it's 🆗 

@@ -15,9 +15,8 @@ import {
   Rocket, Wand2, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle,
   Youtube, Sparkles, ListChecks, Copy,
 } from "lucide-react";
-import { commitShortsSafeVideo, createShortsSafeVideoUploadUrl, uploadVideoToYouTube } from "@/lib/media.functions";
+import { uploadVideoToYouTube } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
-import { loadShortsSafeTools } from "@/lib/shorts-safe-loader";
 
 export type BulkClip = {
   id: string;
@@ -72,8 +71,6 @@ export function BulkPublishPanel({
   onPublished?: () => void;
 }) {
   const upload = useServerFn(uploadVideoToYouTube);
-  const createSafeUpload = useServerFn(createShortsSafeVideoUploadUrl);
-  const commitSafeUpload = useServerFn(commitShortsSafeVideo);
   const seo = useServerFn(generateShortSEO);
 
   // Master template inputs — applied to all selected clips on demand.
@@ -103,7 +100,7 @@ export function BulkPublishPanel({
             // Keep existing edits, but sync published state from server truth.
             status: c.youtube_video_id ? "done" : existing.status,
             ytUrl: c.youtube_video_id
-              ? `https://www.youtube.com/shorts/${c.youtube_video_id}`
+              ? `https://www.youtube.com/watch?v=${c.youtube_video_id}`
               : existing.ytUrl,
           };
           continue;
@@ -117,7 +114,7 @@ export function BulkPublishPanel({
           tagsCsv: (c.tags || []).join(", "),
           privacy,
           status: c.youtube_video_id ? "done" : "idle",
-          ytUrl: c.youtube_video_id ? `https://www.youtube.com/shorts/${c.youtube_video_id}` : undefined,
+          ytUrl: c.youtube_video_id ? `https://www.youtube.com/watch?v=${c.youtube_video_id}` : undefined,
         };
       }
       return next;
@@ -222,19 +219,6 @@ export function BulkPublishPanel({
         if (!row) continue;
         patchRow(id, { status: "uploading", error: undefined });
         try {
-          const safeInfo = await createSafeUpload({ data: { videoId: id } });
-          const { fetchVideoBytes, prepareShortsSafeMp4, uploadSignedMp4 } = await loadShortsSafeTools();
-          const sourceBytes = await fetchVideoBytes(safeInfo.sourceUrl);
-          const safe = await prepareShortsSafeMp4(sourceBytes, "hd");
-          if (safe.changed) {
-            await uploadSignedMp4(safeInfo.uploadSignedUrl, safe.bytes);
-            await commitSafeUpload({ data: {
-              videoId: id,
-              videoStoragePath: safeInfo.videoStoragePath,
-              fileSizeBytes: safe.bytes.byteLength,
-              durationSeconds: safe.durationSeconds,
-            } });
-          }
           const tags = row.tagsCsv
             .split(",")
             .map((t) => t.trim())
