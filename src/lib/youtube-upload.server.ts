@@ -172,6 +172,21 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     bytes = await res.arrayBuffer();
   }
 
+  // Upload-stage Shorts guarantee: validate the already-generated MP4 and, if the only issue
+  // is moov placement, run a pure-JS faststart. Never re-encode; never touch the pipeline.
+  let uploadBytes: Uint8Array = new Uint8Array(bytes);
+  const { validateShortsMp4 } = await import("./shorts-validator.server");
+  const check = validateShortsMp4(uploadBytes);
+  if (!check.ok) {
+    if (check.needsRemux) {
+      throw new Error(`Cannot upload as Short: ${check.reasons.join("; ")}`);
+    }
+    if (check.needsFaststart) {
+      const { faststartMp4 } = await import("./shorts-faststart.server");
+      uploadBytes = faststartMp4(uploadBytes);
+    }
+  }
+
   const meta: UploadMeta = {
     title: (args.title || video.title || "New Short").slice(0, 100),
     description: args.description ?? video.description ?? "",
@@ -180,7 +195,7 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   };
 
   const accessToken = await getFreshYouTubeAccessToken(supabaseAdmin, userId);
-  const youtubeId = await uploadMp4ToYouTube(accessToken, bytes, meta);
+  const youtubeId = await uploadMp4ToYouTube(accessToken, uploadBytes, meta);
   await uploadThumbnailIfPresent(supabaseAdmin, accessToken, youtubeId, video.thumbnail_storage_path ?? null);
 
   const { error: updErr } = await supabaseAdmin
