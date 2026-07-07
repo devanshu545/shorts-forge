@@ -82,6 +82,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             <div><Label>Tags</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tag one, tag two" /></div>
             {video.hashtags?.length ? <div><Label>Hashtags</Label><p className="mt-1 rounded-md border border-border/60 bg-background/40 p-2 text-sm">{video.hashtags.join(" ")}</p></div> : null}
             <div><Label>Privacy</Label><Select value={privacy} onValueChange={(v: "public" | "unlisted" | "private") => setPrivacy(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="private">Private</SelectItem><SelectItem value="unlisted">Unlisted</SelectItem><SelectItem value="public">Public</SelectItem></SelectContent></Select></div>
+            <p className="rounded-md border border-border/50 bg-muted/30 p-2 text-xs text-muted-foreground">🎵 YouTube does not allow attaching Creator Music via API. Add music from YouTube Studio after upload.</p>
             {(uploading || status) && <div className="space-y-2"><Progress value={progress} /><p className="text-sm text-muted-foreground">{status}</p></div>}
             <div className="flex flex-wrap gap-2">
               <Button onClick={run} disabled={uploading || !title.trim() || !video.video_url}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}Upload Now</Button>

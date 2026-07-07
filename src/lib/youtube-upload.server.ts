@@ -172,19 +172,39 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     bytes = await res.arrayBuffer();
   }
 
-  // Upload-stage Shorts guarantee: validate the already-generated MP4 and, if the only issue
-  // is moov placement, run a pure-JS faststart. Never re-encode; never touch the pipeline.
+  // Upload-stage Shorts guarantee: validate the already-generated MP4 and apply
+  // metadata-only fixes (rotation matrix rewrite, moov faststart). Never re-encode.
   let uploadBytes: Uint8Array = new Uint8Array(bytes);
   const { validateShortsMp4 } = await import("./shorts-validator.server");
   const check = validateShortsMp4(uploadBytes);
-  if (!check.ok) {
-    if (check.needsRemux) {
-      throw new Error(`Cannot upload as Short: ${check.reasons.join("; ")}`);
-    }
-    if (check.needsFaststart) {
-      const { faststartMp4 } = await import("./shorts-faststart.server");
-      uploadBytes = faststartMp4(uploadBytes);
-    }
+  console.log("[shorts-upload] pre-upload diagnostics", {
+    videoId,
+    ok: check.ok,
+    reasons: check.reasons,
+    needsFaststart: check.needsFaststart,
+    needsRotationFix: check.needsRotationFix,
+    needsRemux: check.needsRemux,
+    details: check.details,
+  });
+  if (check.needsRemux) {
+    throw new Error(`Cannot upload as Short: ${check.reasons.join("; ")}`);
+  }
+  if (check.needsRotationFix) {
+    const { rotationFixMp4 } = await import("./shorts-rotate-fix.server");
+    uploadBytes = rotationFixMp4(uploadBytes);
+  }
+  if (check.needsFaststart) {
+    const { faststartMp4 } = await import("./shorts-faststart.server");
+    uploadBytes = faststartMp4(uploadBytes);
+  }
+  if (check.needsRotationFix || check.needsFaststart) {
+    const recheck = validateShortsMp4(uploadBytes);
+    console.log("[shorts-upload] post-fix diagnostics", {
+      videoId,
+      ok: recheck.ok,
+      reasons: recheck.reasons,
+      details: recheck.details,
+    });
   }
 
   const meta: UploadMeta = {
