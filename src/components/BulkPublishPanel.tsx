@@ -15,8 +15,11 @@ import {
   Rocket, Wand2, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle,
   Youtube, Sparkles, ListChecks, Copy,
 } from "lucide-react";
-import { uploadVideoToYouTube } from "@/lib/media.functions";
+import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
+import { prepareShortsReadyBlob } from "@/lib/shorts-ready.client";
+import { supabase } from "@/integrations/supabase/client";
+
 
 export type BulkClip = {
   id: string;
