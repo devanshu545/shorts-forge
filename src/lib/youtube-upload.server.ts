@@ -248,5 +248,17 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     .eq("user_id", userId);
   if (updErr) throw new Error(updErr.message);
 
+  // Clean up the client-uploaded temp file. Never touches the original
+  // video's storage object (that path is separate).
+  if (preparedPath) {
+    try {
+      await supabaseAdmin.storage.from("videos").remove([preparedPath]);
+    } catch (err) {
+      console.warn("[shorts-upload] failed to delete temp prepared file", preparedPath, err);
+    }
+  }
+
+
+
   return { youtubeVideoId: youtubeId, url: `https://www.youtube.com/watch?v=${youtubeId}` };
 }
