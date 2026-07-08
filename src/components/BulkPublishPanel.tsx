@@ -74,7 +74,9 @@ export function BulkPublishPanel({
   onPublished?: () => void;
 }) {
   const upload = useServerFn(uploadVideoToYouTube);
+  const createTarget = useServerFn(createShortsReadyUploadTarget);
   const seo = useServerFn(generateShortSEO);
+
 
   // Master template inputs — applied to all selected clips on demand.
   const [titleTpl, setTitleTpl] = useState("🔥 {title} #shorts");
