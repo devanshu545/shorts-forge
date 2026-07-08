@@ -17,7 +17,12 @@ type UploadExistingVideoArgs = {
   description?: string | null;
   tags?: string[] | null;
   privacyStatus?: YouTubePrivacy;
+  // Optional temp storage path (in the `videos` bucket) with a client-side
+  // Shorts-ready re-encode. When present, upload THIS file to YouTube and
+  // delete it afterwards; the original storage object is never modified.
+  preparedStoragePath?: string | null;
 };
+
 
 function asArrayBuffer(bytes: ArrayBuffer | Uint8Array): ArrayBuffer {
   if (bytes instanceof ArrayBuffer) return bytes;
