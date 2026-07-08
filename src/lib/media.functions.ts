@@ -57,7 +57,17 @@ const UploadYouTubeInput = z.object({
   description: z.string().max(5000).default(""),
   tags: z.array(z.string()).max(30).default([]),
   privacyStatus: z.enum(["public", "unlisted", "private"]).default("private"),
+  // Optional temp storage path (in the `videos` bucket) holding a client-side
+  // Shorts-ready re-encode of the original clip. When provided, the server
+  // uploads THIS file to YouTube instead of the original — the original
+  // storage object is never modified — and deletes the temp file after upload.
+  preparedStoragePath: z.string().min(1).max(500).optional(),
 });
+
+const ShortsReadyUploadTargetInput = z.object({
+  videoId: z.string().uuid(),
+});
+
 
 function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
