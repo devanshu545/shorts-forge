@@ -567,5 +567,32 @@ export const uploadVideoToYouTube = createServerFn({ method: "POST" })
       description: data.description,
       tags: data.tags,
       privacyStatus: data.privacyStatus,
+      preparedStoragePath: data.preparedStoragePath,
     });
   });
+
+// Mints a short-lived signed upload URL under the `videos` bucket so the
+// client can PUT a converted Shorts-ready MP4 without needing extra RLS
+// policies. The path is scoped to the caller's user id and to this videoId.
+// The server-side upload step downloads from this path, sends it to YouTube,
+// and then deletes it. The original video's storage path is untouched.
+export const createShortsReadyUploadTarget = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => ShortsReadyUploadTargetInput.parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: video, error } = await supabaseAdmin
+      .from("videos")
+      .select("id,user_id")
+      .eq("id", data.videoId)
+      .eq("user_id", context.userId)
+      .single();
+    if (error || !video) throw new Error(error?.message || "Video not found");
+    const path = `${context.userId}/upload-ready/${data.videoId}-${Date.now()}.mp4`;
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from("videos")
+      .createSignedUploadUrl(path);
+    if (signErr || !signed) throw new Error(signErr?.message || "Could not mint upload URL");
+    return { path: signed.path, token: signed.token, signedUrl: signed.signedUrl };
+  });
+
