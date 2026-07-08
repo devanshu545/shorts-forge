@@ -229,15 +229,35 @@ export function BulkPublishPanel({
             .map((t) => t.trim())
             .filter(Boolean)
             .slice(0, 30);
+          // Client-side Shorts-ready prep (skips re-encode when the source
+          // is already true-vertical 1080x1920 H.264/AAC faststart).
+          const clip = clips.find((c) => c.id === id);
+          let preparedStoragePath: string | undefined;
+          if (clip?.video_url) {
+            const prepared = await prepareShortsReadyBlob(clip.video_url);
+            if (!prepared.reused) {
+              const target = await createTarget({ data: { videoId: id } });
+              const { error: upErr } = await supabase.storage
+                .from("videos")
+                .uploadToSignedUrl(target.path, target.token, prepared.file, {
+                  contentType: "video/mp4",
+                  upsert: true,
+                });
+              if (upErr) throw new Error(`Failed to stage prepared copy: ${upErr.message}`);
+              preparedStoragePath = target.path;
+            }
+          }
           const result = await upload({ data: {
             videoId: id,
             title: (row.title || `Clip ${i + 1}`).slice(0, 100),
             description: row.description.slice(0, 5000),
             tags,
             privacyStatus: row.privacy,
+            preparedStoragePath,
           } });
           patchRow(id, { status: "done", ytUrl: result.url });
           ok += 1;
+
         } catch (err) {
           patchRow(id, {
             status: "failed",
