@@ -167,7 +167,15 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   if (!video.video_storage_path && !video.video_url) throw new Error("No MP4 file is attached to this library item");
 
   let bytes: ArrayBuffer;
-  if (video.video_storage_path) {
+  const preparedPath = args.preparedStoragePath || null;
+  if (preparedPath) {
+    // Client-prepared Shorts-ready copy. Downloads from a separate temp path;
+    // the video's own storage object is NOT read here, so the original file
+    // remains byte-identical after upload.
+    const { data: blob, error: downErr } = await supabaseAdmin.storage.from("videos").download(preparedPath);
+    if (downErr || !blob) throw new Error(`Could not read prepared Shorts-ready copy: ${downErr?.message || "missing file"}`);
+    bytes = await blob.arrayBuffer();
+  } else if (video.video_storage_path) {
     const { data: blob, error: downErr } = await supabaseAdmin.storage.from("videos").download(video.video_storage_path);
     if (downErr || !blob) throw new Error(`Could not read video from storage: ${downErr?.message || "missing file"}`);
     bytes = await blob.arrayBuffer();
@@ -176,6 +184,7 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     if (!res.ok) throw new Error(`Could not fetch video URL: HTTP ${res.status}`);
     bytes = await res.arrayBuffer();
   }
+
 
   // Upload-stage Shorts guarantee: validate the already-generated MP4 and apply
   // metadata-only fixes (rotation matrix rewrite, moov faststart). Never re-encode.
