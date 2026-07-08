@@ -57,7 +57,17 @@ const UploadYouTubeInput = z.object({
   description: z.string().max(5000).default(""),
   tags: z.array(z.string()).max(30).default([]),
   privacyStatus: z.enum(["public", "unlisted", "private"]).default("private"),
+  // Optional temp storage path (in the `videos` bucket) holding a client-side
+  // Shorts-ready re-encode of the original clip. When provided, the server
+  // uploads THIS file to YouTube instead of the original — the original
+  // storage object is never modified — and deletes the temp file after upload.
+  preparedStoragePath: z.string().min(1).max(500).optional(),
 });
+
+const ShortsReadyUploadTargetInput = z.object({
+  videoId: z.string().uuid(),
+});
+
 
 function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -557,5 +567,32 @@ export const uploadVideoToYouTube = createServerFn({ method: "POST" })
       description: data.description,
       tags: data.tags,
       privacyStatus: data.privacyStatus,
+      preparedStoragePath: data.preparedStoragePath,
     });
   });
+
+// Mints a short-lived signed upload URL under the `videos` bucket so the
+// client can PUT a converted Shorts-ready MP4 without needing extra RLS
+// policies. The path is scoped to the caller's user id and to this videoId.
+// The server-side upload step downloads from this path, sends it to YouTube,
+// and then deletes it. The original video's storage path is untouched.
+export const createShortsReadyUploadTarget = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((raw: unknown) => ShortsReadyUploadTargetInput.parse(raw))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: video, error } = await supabaseAdmin
+      .from("videos")
+      .select("id,user_id")
+      .eq("id", data.videoId)
+      .eq("user_id", context.userId)
+      .single();
+    if (error || !video) throw new Error(error?.message || "Video not found");
+    const path = `${context.userId}/upload-ready/${data.videoId}-${Date.now()}.mp4`;
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from("videos")
+      .createSignedUploadUrl(path);
+    if (signErr || !signed) throw new Error(signErr?.message || "Could not mint upload URL");
+    return { path: signed.path, token: signed.token, signedUrl: signed.signedUrl };
+  });
+

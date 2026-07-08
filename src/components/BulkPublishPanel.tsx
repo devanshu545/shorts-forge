@@ -15,8 +15,11 @@ import {
   Rocket, Wand2, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle,
   Youtube, Sparkles, ListChecks, Copy,
 } from "lucide-react";
-import { uploadVideoToYouTube } from "@/lib/media.functions";
+import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
+import { prepareShortsReadyBlob } from "@/lib/shorts-ready.client";
+import { supabase } from "@/integrations/supabase/client";
+
 
 export type BulkClip = {
   id: string;
@@ -71,7 +74,9 @@ export function BulkPublishPanel({
   onPublished?: () => void;
 }) {
   const upload = useServerFn(uploadVideoToYouTube);
+  const createTarget = useServerFn(createShortsReadyUploadTarget);
   const seo = useServerFn(generateShortSEO);
+
 
   // Master template inputs — applied to all selected clips on demand.
   const [titleTpl, setTitleTpl] = useState("🔥 {title} #shorts");
@@ -224,15 +229,35 @@ export function BulkPublishPanel({
             .map((t) => t.trim())
             .filter(Boolean)
             .slice(0, 30);
+          // Client-side Shorts-ready prep (skips re-encode when the source
+          // is already true-vertical 1080x1920 H.264/AAC faststart).
+          const clip = clips.find((c) => c.id === id);
+          let preparedStoragePath: string | undefined;
+          if (clip?.video_url) {
+            const prepared = await prepareShortsReadyBlob(clip.video_url);
+            if (!prepared.reused) {
+              const target = await createTarget({ data: { videoId: id } });
+              const { error: upErr } = await supabase.storage
+                .from("videos")
+                .uploadToSignedUrl(target.path, target.token, prepared.file, {
+                  contentType: "video/mp4",
+                  upsert: true,
+                });
+              if (upErr) throw new Error(`Failed to stage prepared copy: ${upErr.message}`);
+              preparedStoragePath = target.path;
+            }
+          }
           const result = await upload({ data: {
             videoId: id,
             title: (row.title || `Clip ${i + 1}`).slice(0, 100),
             description: row.description.slice(0, 5000),
             tags,
             privacyStatus: row.privacy,
+            preparedStoragePath,
           } });
           patchRow(id, { status: "done", ytUrl: result.url });
           ok += 1;
+
         } catch (err) {
           patchRow(id, {
             status: "failed",

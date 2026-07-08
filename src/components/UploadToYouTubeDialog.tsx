@@ -10,7 +10,10 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, UploadCloud, Youtube } from "lucide-react";
 import { toast } from "sonner";
-import { uploadVideoToYouTube } from "@/lib/media.functions";
+import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
+import { prepareShortsReadyBlob } from "@/lib/shorts-ready.client";
+import { supabase } from "@/integrations/supabase/client";
+
 
 type UploadVideo = {
   id: string;
@@ -25,6 +28,7 @@ type UploadVideo = {
 
 export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: UploadVideo; children?: React.ReactNode; onUploaded?: () => void }) {
   const upload = useServerFn(uploadVideoToYouTube);
+  const createTarget = useServerFn(createShortsReadyUploadTarget);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(video.title || "Untitled Short");
   const [description, setDescription] = useState(video.description || "");
@@ -36,20 +40,64 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [uploading, setUploading] = useState(false);
 
   const run = async () => {
+    if (!video.video_url) {
+      toast.error("No video file attached to this clip");
+      return;
+    }
     setUploading(true);
-    setProgress(15);
-    setStatus("Uploading to YouTube... 15%");
-    const ticker = window.setInterval(() => {
-      setProgress((p) => {
-        const next = Math.min(92, p + 7);
-        setStatus(`Uploading to YouTube... ${next}%`);
-        return next;
-      });
-    }, 900);
+    setProgress(2);
+    setStatus("Preparing Shorts-ready copy…");
+    let ticker: number | undefined;
     try {
-      const result = await upload({ data: { videoId: video.id, title, description, tags: tags.split(",").map((t) => t.trim()).filter(Boolean), privacyStatus: privacy } });
+      // Step 1 — client-side Shorts-ready conversion. Runs entirely in the
+      // browser via ffmpeg.wasm. Original file in storage stays byte-identical.
+      const prepared = await prepareShortsReadyBlob(video.video_url, {
+        onProgress: (pct, label) => {
+          // Map 0..100% of prep to 0..55% of the overall bar.
+          const overall = Math.round(pct * 0.55);
+          setProgress(overall);
+          setStatus(label);
+        },
+      });
+
+      // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
+      let preparedStoragePath: string | undefined;
+      if (!prepared.reused) {
+        setStatus("Uploading Shorts-ready copy…");
+        setProgress(60);
+        const target = await createTarget({ data: { videoId: video.id } });
+        const { error: upErr } = await supabase.storage
+          .from("videos")
+          .uploadToSignedUrl(target.path, target.token, prepared.file, {
+            contentType: "video/mp4",
+            upsert: true,
+          });
+        if (upErr) throw new Error(`Failed to stage prepared copy: ${upErr.message}`);
+        preparedStoragePath = target.path;
+      }
+
+      // Step 3 — kick off the existing YouTube upload path.
+      setProgress(70);
+      setStatus("Uploading to YouTube…");
+      ticker = window.setInterval(() => {
+        setProgress((p) => {
+          const next = Math.min(96, p + 3);
+          setStatus(`Uploading to YouTube… ${next}%`);
+          return next;
+        });
+      }, 900);
+      const result = await upload({ data: {
+        videoId: video.id,
+        title,
+        description,
+        tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+        privacyStatus: privacy,
+        preparedStoragePath,
+      } });
       setProgress(100);
-      setStatus("✅ Uploaded to YouTube!");
+      setStatus(prepared.reused
+        ? "✅ Uploaded to YouTube (original file was already Shorts-ready)"
+        : "✅ Uploaded to YouTube as a Short");
       setUrl(result.url);
       toast.success("Uploaded to YouTube");
       onUploaded?.();
@@ -58,10 +106,11 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
       setStatus(message);
       toast.error("YouTube upload failed", { description: message });
     } finally {
-      window.clearInterval(ticker);
+      if (ticker !== undefined) window.clearInterval(ticker);
       setUploading(false);
     }
   };
+
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
