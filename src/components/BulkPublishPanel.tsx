@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
-import { prepareShortsReadyBlob } from "@/lib/shorts-ready.client";
+const loadPrepareShortsReadyBlob = () => import(/* @vite-ignore */ "@/lib/shorts-ready.client").then((m) => m.prepareShortsReadyBlob);
 import { supabase } from "@/integrations/supabase/client";
 
 
@@ -234,6 +234,7 @@ export function BulkPublishPanel({
           const clip = clips.find((c) => c.id === id);
           let preparedStoragePath: string | undefined;
           if (clip?.video_url) {
+            const prepareShortsReadyBlob = await loadPrepareShortsReadyBlob();
             const prepared = await prepareShortsReadyBlob(clip.video_url);
             if (!prepared.reused) {
               const target = await createTarget({ data: { videoId: id } });
