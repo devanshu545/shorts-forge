@@ -227,8 +227,8 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   }
 
 
-  // Upload-stage Shorts guarantee: validate the already-generated MP4 and apply
-  // metadata-only fixes (rotation matrix rewrite, moov faststart). Never re-encode.
+  // Upload-stage Shorts guarantee: validate the selected MP4, allow only a
+  // metadata-only faststart rewrite, and never upload rotation-metadata files.
   let uploadBytes: Uint8Array = new Uint8Array(bytes);
   const { validateShortsMp4 } = await import("./shorts-validator.server");
   const check = validateShortsMp4(uploadBytes);
