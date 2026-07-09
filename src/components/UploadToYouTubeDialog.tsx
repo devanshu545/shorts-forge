@@ -50,9 +50,9 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
     try {
       // Step 1 — client-side Shorts-ready conversion. Runs entirely in the
       // browser via ffmpeg.wasm. Original file in storage stays byte-identical.
+      const { prepareShortsReadyBlob } = await import("@/lib/shorts-ready.client");
       const prepared = await prepareShortsReadyBlob(video.video_url, {
-        onProgress: (pct, label) => {
-          // Map 0..100% of prep to 0..55% of the overall bar.
+        onProgress: (pct: number, label: string) => {
           const overall = Math.round(pct * 0.55);
           setProgress(overall);
           setStatus(label);
