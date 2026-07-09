@@ -62,6 +62,7 @@ const UploadYouTubeInput = z.object({
   // uploads THIS file to YouTube instead of the original — the original
   // storage object is never modified — and deletes the temp file after upload.
   preparedStoragePath: z.string().min(1).max(500).optional(),
+  preparedExpected: z.boolean().default(false),
 });
 
 const ShortsReadyUploadTargetInput = z.object({
@@ -568,6 +569,7 @@ export const uploadVideoToYouTube = createServerFn({ method: "POST" })
       tags: data.tags,
       privacyStatus: data.privacyStatus,
       preparedStoragePath: data.preparedStoragePath,
+      preparedExpected: data.preparedExpected,
     });
   });
 

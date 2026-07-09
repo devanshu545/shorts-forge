@@ -117,6 +117,8 @@ function descend(buf: Uint8Array, root: Box, path: string[]): Box | null {
 export type ProbeResult = {
   ok: boolean;
   reasons: string[];
+  rawWidth: number;
+  rawHeight: number;
   displayWidth: number;
   displayHeight: number;
   rotationDeg: number;
@@ -135,6 +137,8 @@ export function probeMp4(bytes: Uint8Array): ProbeResult {
   const result: ProbeResult = {
     ok: false,
     reasons,
+    rawWidth: 0,
+    rawHeight: 0,
     displayWidth: 0,
     displayHeight: 0,
     rotationDeg: 0,
@@ -193,6 +197,8 @@ export function probeMp4(bytes: Uint8Array): ProbeResult {
               if (rot < 0) rot += 360;
               const rotated = rot === 90 || rot === 270;
               result.rotationDeg = rot;
+              result.rawWidth = Math.round(rawW);
+              result.rawHeight = Math.round(rawH);
               result.displayWidth = rotated ? Math.round(rawH) : Math.round(rawW);
               result.displayHeight = rotated ? Math.round(rawW) : Math.round(rawH);
             }
@@ -237,8 +243,33 @@ export type PrepareResult = {
   file: Blob;
   reused: boolean;
   reason: string;
-  probe: ProbeResult;
+  sourceUrl: string;
+  sourceFileSize: number;
+  sourceProbe: ProbeResult;
+  uploadFileSize: number;
+  uploadProbe: ProbeResult;
 };
+
+function probeSummary(probe: ProbeResult, fileSize: number) {
+  return {
+    width: probe.rawWidth,
+    height: probe.rawHeight,
+    displayWidth: probe.displayWidth,
+    displayHeight: probe.displayHeight,
+    duration: Number(probe.durationSeconds.toFixed(3)),
+    codec: [probe.videoCodec, probe.audioCodec].filter(Boolean).join("/") || "unknown",
+    rotation: probe.rotationDeg,
+    fileSize,
+    moovBeforeMdat: probe.moovBeforeMdat,
+    ok: probe.ok,
+    reasons: probe.reasons,
+  };
+}
+
+function isPhysicalPortraitShort(probe: ProbeResult) {
+  const ratio = probe.rawWidth > 0 ? probe.rawHeight / probe.rawWidth : 0;
+  return probe.rawHeight > probe.rawWidth && Math.abs(ratio - 16 / 9) < 0.03 && probe.rotationDeg === 0;
+}
 
 /**
  * Fetch a generated MP4 from `sourceUrl`, produce a YouTube-Shorts-ready Blob.
@@ -254,27 +285,46 @@ export async function prepareShortsReadyBlob(
   const res = await fetch(sourceUrl);
   if (!res.ok) throw new Error(`Could not fetch source MP4 (HTTP ${res.status})`);
   const inputBytes = new Uint8Array(await res.arrayBuffer());
+  console.info("[shorts-ready] Original generated MP4 details logged.", {
+    sourceUrl,
+    fileSize: inputBytes.byteLength,
+  });
 
   onProgress?.(8, "Analyzing MP4 metadata…");
+  console.info("[shorts-ready] Validation started.", { sourceUrl });
   const probe = probeMp4(inputBytes);
+  console.info("[shorts-ready] Original file", probeSummary(probe, inputBytes.byteLength));
   const alreadyShort =
     !forceConvert &&
     probe.ok &&
+    probe.rawWidth === 1080 &&
+    probe.rawHeight === 1920 &&
     probe.displayWidth === 1080 &&
     probe.displayHeight === 1920 &&
+    probe.rotationDeg === 0 &&
     probe.moovBeforeMdat;
 
   if (alreadyShort) {
     onProgress?.(100, "Already Shorts-ready — using original file");
+    console.info("[shorts-ready] Upload-ready MP4 created.", probeSummary(probe, inputBytes.byteLength));
+    console.info("[shorts-ready] Upload-ready MP4 validated.", { reused: true, valid: true });
     return {
       file: new Blob([inputBytes as BlobPart], { type: "video/mp4" }),
       reused: true,
       reason: "input already satisfies Shorts requirements",
-      probe,
+      sourceUrl,
+      sourceFileSize: inputBytes.byteLength,
+      sourceProbe: probe,
+      uploadFileSize: inputBytes.byteLength,
+      uploadProbe: probe,
     };
   }
 
   onProgress?.(12, "Loading Shorts converter (ffmpeg)…");
+  console.info("[shorts-ready] Conversion started.", {
+    sourceUrl,
+    reason: probe.reasons.join("; ") || "source is not exact 1080x1920 physical portrait faststart MP4",
+  });
   const ff = await getFfmpeg(onLog);
 
   const inName = `in-${Date.now()}.mp4`;
@@ -321,24 +371,35 @@ export async function prepareShortsReadyBlob(
     // Post-encode validation. If anything's off, refuse the upload rather than
     // sending a possibly non-compliant file to YouTube.
     const recheck = probeMp4(outBytes);
+    console.info("[shorts-ready] Conversion completed.", probeSummary(recheck, outBytes.byteLength));
+    console.info("[shorts-ready] Converted file", probeSummary(recheck, outBytes.byteLength));
     if (
       !recheck.ok ||
+      recheck.rawWidth !== 1080 ||
+      recheck.rawHeight !== 1920 ||
       recheck.displayWidth !== 1080 ||
       recheck.displayHeight !== 1920 ||
+      !isPhysicalPortraitShort(recheck) ||
       recheck.durationSeconds > 60.5
     ) {
       throw new Error(
         `Shorts-ready conversion output failed validation: ${recheck.reasons.join("; ")} ` +
-          `(dims ${recheck.displayWidth}x${recheck.displayHeight}, dur ${recheck.durationSeconds.toFixed(2)}s)`,
+          `(raw ${recheck.rawWidth}x${recheck.rawHeight}, display ${recheck.displayWidth}x${recheck.displayHeight}, rot ${recheck.rotationDeg}°, dur ${recheck.durationSeconds.toFixed(2)}s)`,
       );
     }
 
     onProgress?.(100, "Shorts-ready copy prepared");
+    console.info("[shorts-ready] Upload-ready MP4 created.", probeSummary(recheck, outBytes.byteLength));
+    console.info("[shorts-ready] Upload-ready MP4 validated.", { reused: false, valid: true });
     return {
       file: new Blob([outBytes as BlobPart], { type: "video/mp4" }),
       reused: false,
       reason: probe.reasons.join("; ") || "converted to true vertical 1080x1920",
-      probe,
+      sourceUrl,
+      sourceFileSize: inputBytes.byteLength,
+      sourceProbe: probe,
+      uploadFileSize: outBytes.byteLength,
+      uploadProbe: recheck,
     };
   } finally {
     try { await ff.deleteFile(inName); } catch { /* noop */ }

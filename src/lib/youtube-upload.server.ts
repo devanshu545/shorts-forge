@@ -1,3 +1,5 @@
+import type { ShortsValidation } from "./shorts-validator.server";
+
 type SupabaseAdmin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
 
 export type YouTubePrivacy = "public" | "unlisted" | "private";
@@ -21,7 +23,37 @@ type UploadExistingVideoArgs = {
   // Shorts-ready re-encode. When present, upload THIS file to YouTube and
   // delete it afterwards; the original storage object is never modified.
   preparedStoragePath?: string | null;
+  preparedExpected?: boolean;
 };
+
+function uploadDiagnostics(details: {
+  source: string;
+  converted: boolean;
+  byteLength: number;
+  validation: ShortsValidation;
+}) {
+  const d = details.validation.details;
+  return {
+    source: details.source,
+    converted: details.converted,
+    width: d.width,
+    height: d.height,
+    displayWidth: d.displayWidth,
+    displayHeight: d.displayHeight,
+    rotation: d.rotationDeg,
+    duration: d.durationSeconds,
+    codec: [d.videoCodec, d.audioCodec].filter(Boolean).join("/") || "unknown",
+    fileSize: details.byteLength,
+    ok: details.validation.ok,
+    reasons: details.validation.reasons,
+  };
+}
+
+function isPortraitNineBySixteen(details: { width?: number; height?: number; rotationDeg?: number }) {
+  if (!details.width || !details.height) return false;
+  const ratio = details.height / details.width;
+  return details.height > details.width && Math.abs(ratio - 16 / 9) < 0.03 && (details.rotationDeg ?? 0) === 0;
+}
 
 
 function asArrayBuffer(bytes: ArrayBuffer | Uint8Array): ArrayBuffer {
@@ -168,6 +200,11 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
 
   let bytes: ArrayBuffer;
   const preparedPath = args.preparedStoragePath || null;
+  if (args.preparedExpected && !preparedPath) {
+    throw new Error("Upload-ready copy was expected but no prepared storage path was provided. Aborting before YouTube upload.");
+  }
+  let selectedSource = "";
+  let converted = false;
   if (preparedPath) {
     // Client-prepared Shorts-ready copy. Downloads from a separate temp path;
     // the video's own storage object is NOT read here, so the original file
@@ -175,14 +212,18 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
     const { data: blob, error: downErr } = await supabaseAdmin.storage.from("videos").download(preparedPath);
     if (downErr || !blob) throw new Error(`Could not read prepared Shorts-ready copy: ${downErr?.message || "missing file"}`);
     bytes = await blob.arrayBuffer();
+    selectedSource = `videos/${preparedPath}`;
+    converted = true;
   } else if (video.video_storage_path) {
     const { data: blob, error: downErr } = await supabaseAdmin.storage.from("videos").download(video.video_storage_path);
     if (downErr || !blob) throw new Error(`Could not read video from storage: ${downErr?.message || "missing file"}`);
     bytes = await blob.arrayBuffer();
+    selectedSource = `videos/${video.video_storage_path}`;
   } else {
     const res = await fetch(video.video_url!);
     if (!res.ok) throw new Error(`Could not fetch video URL: HTTP ${res.status}`);
     bytes = await res.arrayBuffer();
+    selectedSource = video.video_url!;
   }
 
 
@@ -191,6 +232,14 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   let uploadBytes: Uint8Array = new Uint8Array(bytes);
   const { validateShortsMp4 } = await import("./shorts-validator.server");
   const check = validateShortsMp4(uploadBytes);
+  console.log("[shorts-upload] Upload-ready MP4 validated.", uploadDiagnostics({
+    source: selectedSource,
+    converted,
+    byteLength: uploadBytes.byteLength,
+    validation: check,
+  }));
+  console.log("USING FILE FOR UPLOAD:", selectedSource);
+  console.log(`Converted = ${converted ? "true" : "false"}`);
   console.log("[shorts-upload] pre-upload diagnostics", {
     videoId,
     ok: check.ok,
@@ -202,6 +251,9 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   });
   if (check.needsRemux) {
     throw new Error(`Cannot upload as Short: ${check.reasons.join("; ")}`);
+  }
+  if (!converted && !isPortraitNineBySixteen(check.details)) {
+    throw new Error("Upload attempted to use the original file, but it is not a physical portrait 9:16 MP4. Aborting before YouTube upload.");
   }
   if (check.needsRotationFix) {
     const { rotationFixMp4 } = await import("./shorts-rotate-fix.server");
@@ -219,6 +271,11 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
       reasons: recheck.reasons,
       details: recheck.details,
     });
+    if (!isPortraitNineBySixteen(recheck.details)) {
+      throw new Error("Selected upload file is not a physical portrait 9:16 MP4 after validation/fixes. Aborting before YouTube upload.");
+    }
+  } else if (!isPortraitNineBySixteen(check.details)) {
+    throw new Error("Selected upload file is not a physical portrait 9:16 MP4. Aborting before YouTube upload.");
   }
 
   const meta: UploadMeta = {
@@ -229,7 +286,14 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   };
 
   const accessToken = await getFreshYouTubeAccessToken(supabaseAdmin, userId);
+  console.log("[shorts-upload] Upload uses upload-ready MP4.", {
+    videoId,
+    source: selectedSource,
+    converted,
+    byteLength: uploadBytes.byteLength,
+  });
   const youtubeId = await uploadMp4ToYouTube(accessToken, uploadBytes, meta);
+  console.log("[shorts-upload] Upload completes.", { videoId, youtubeId, converted });
   await uploadThumbnailIfPresent(supabaseAdmin, accessToken, youtubeId, video.thumbnail_storage_path ?? null);
 
   const { error: updErr } = await supabaseAdmin
