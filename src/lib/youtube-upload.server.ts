@@ -252,18 +252,17 @@ export async function uploadExistingVideoToYouTube(args: UploadExistingVideoArgs
   if (check.needsRemux) {
     throw new Error(`Cannot upload as Short: ${check.reasons.join("; ")}`);
   }
+  if (check.needsRotationFix) {
+    throw new Error("Selected upload file relies on rotation metadata instead of physical portrait pixels. Aborting before YouTube upload.");
+  }
   if (!converted && !isPortraitNineBySixteen(check.details)) {
     throw new Error("Upload attempted to use the original file, but it is not a physical portrait 9:16 MP4. Aborting before YouTube upload.");
-  }
-  if (check.needsRotationFix) {
-    const { rotationFixMp4 } = await import("./shorts-rotate-fix.server");
-    uploadBytes = rotationFixMp4(uploadBytes);
   }
   if (check.needsFaststart) {
     const { faststartMp4 } = await import("./shorts-faststart.server");
     uploadBytes = faststartMp4(uploadBytes);
   }
-  if (check.needsRotationFix || check.needsFaststart) {
+  if (check.needsFaststart) {
     const recheck = validateShortsMp4(uploadBytes);
     console.log("[shorts-upload] post-fix diagnostics", {
       videoId,
