@@ -233,9 +233,14 @@ export function BulkPublishPanel({
           // is already true-vertical 1080x1920 H.264/AAC faststart).
           const clip = clips.find((c) => c.id === id);
           let preparedStoragePath: string | undefined;
+          let preparedExpected = false;
           if (clip?.video_url) {
+            console.info("[shorts-ready] Bulk upload prep started.", { videoId: id, sourceUrl: clip.video_url });
             const prepareShortsReadyBlob = await loadPrepareShortsReadyBlob();
-            const prepared = await prepareShortsReadyBlob(clip.video_url);
+            const prepared = await prepareShortsReadyBlob(clip.video_url, {
+              onProgress: (_pct: number, label: string) => patchRow(id, { error: label }),
+            });
+            preparedExpected = !prepared.reused;
             if (!prepared.reused) {
               const target = await createTarget({ data: { videoId: id } });
               const { error: upErr } = await supabase.storage
@@ -246,7 +251,32 @@ export function BulkPublishPanel({
                 });
               if (upErr) throw new Error(`Failed to stage prepared copy: ${upErr.message}`);
               preparedStoragePath = target.path;
+              console.info("[shorts-ready] Upload-ready MP4 staged.", {
+                videoId: id,
+                preparedStoragePath,
+                width: prepared.uploadProbe.rawWidth,
+                height: prepared.uploadProbe.rawHeight,
+                duration: prepared.uploadProbe.durationSeconds,
+                codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
+                fileSize: prepared.uploadFileSize,
+              });
             }
+            if (preparedExpected && !preparedStoragePath) {
+              throw new Error("Prepared Shorts-ready copy was required but no staged upload path was created. Aborting before YouTube upload.");
+            }
+            const uploadSource = prepared.reused ? clip.video_url : preparedStoragePath;
+            console.info("[shorts-ready] Upload uses upload-ready MP4.", {
+              videoId: id,
+              source: uploadSource,
+              converted: !prepared.reused,
+              width: prepared.uploadProbe.rawWidth,
+              height: prepared.uploadProbe.rawHeight,
+              duration: prepared.uploadProbe.durationSeconds,
+              codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
+              fileSize: prepared.uploadFileSize,
+            });
+            console.info("USING FILE FOR UPLOAD:", uploadSource);
+            console.info(`Converted = ${prepared.reused ? "false" : "true"}`);
           }
           const result = await upload({ data: {
             videoId: id,
@@ -255,6 +285,7 @@ export function BulkPublishPanel({
             tags,
             privacyStatus: row.privacy,
             preparedStoragePath,
+            preparedExpected,
           } });
           patchRow(id, { status: "done", ytUrl: result.url });
           ok += 1;

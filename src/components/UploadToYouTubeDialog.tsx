@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,19 @@ type UploadVideo = {
   youtube_video_id?: string | null;
 };
 
+type PreparedUpload = {
+  file: Blob;
+  reused: boolean;
+  uploadFileSize: number;
+  uploadProbe: {
+    rawWidth: number;
+    rawHeight: number;
+    durationSeconds: number;
+    videoCodec: string | null;
+    audioCodec: string | null;
+  };
+};
+
 export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: UploadVideo; children?: React.ReactNode; onUploaded?: () => void }) {
   const upload = useServerFn(uploadVideoToYouTube);
   const createTarget = useServerFn(createShortsReadyUploadTarget);
@@ -37,6 +50,44 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [status, setStatus] = useState("");
   const [url, setUrl] = useState<string | null>(video.youtube_video_id ? `https://www.youtube.com/watch?v=${video.youtube_video_id}` : null);
   const [uploading, setUploading] = useState(false);
+  const [preparedPreviewUrl, setPreparedPreviewUrl] = useState<string | null>(null);
+  const [preparedSummary, setPreparedSummary] = useState<string | null>(null);
+  const [preparedUpload, setPreparedUpload] = useState<PreparedUpload | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (preparedPreviewUrl) URL.revokeObjectURL(preparedPreviewUrl);
+    };
+  }, [preparedPreviewUrl]);
+
+  const prepareForUpload = async () => {
+    if (!video.video_url) {
+      throw new Error("No video file attached to this clip");
+    }
+    // Step 1 — client-side Shorts-ready conversion. Runs entirely in the
+    // browser via ffmpeg.wasm. Original file in storage stays byte-identical.
+    const { prepareShortsReadyBlob } = await import(/* @vite-ignore */ "@/lib/shorts-ready.client");
+    const prepared = await prepareShortsReadyBlob(video.video_url, {
+      onProgress: (pct: number, label: string) => {
+        const overall = Math.round(pct * 0.55);
+        setProgress(overall);
+        setStatus(label);
+      },
+    });
+    const previewUrl = URL.createObjectURL(prepared.file);
+    setPreparedPreviewUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous);
+      return previewUrl;
+    });
+    setPreparedSummary(
+      `${prepared.uploadProbe.rawWidth}×${prepared.uploadProbe.rawHeight} · ` +
+        `${prepared.uploadProbe.durationSeconds.toFixed(1)}s · ` +
+        `${prepared.uploadProbe.videoCodec || "unknown"}/${prepared.uploadProbe.audioCodec || "unknown"} · ` +
+        `${(prepared.uploadFileSize / 1024 / 1024).toFixed(1)} MB`,
+    );
+    setPreparedUpload(prepared);
+    return prepared;
+  };
 
   const run = async () => {
     if (!video.video_url) {
@@ -45,19 +96,16 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
     }
     setUploading(true);
     setProgress(2);
-    setStatus("Preparing Shorts-ready copy…");
+    setStatus(preparedUpload ? "Uploading prepared Shorts-ready copy…" : "Preparing Shorts-ready copy…");
     let ticker: number | undefined;
     try {
-      // Step 1 — client-side Shorts-ready conversion. Runs entirely in the
-      // browser via ffmpeg.wasm. Original file in storage stays byte-identical.
-      const { prepareShortsReadyBlob } = await import(/* @vite-ignore */ "@/lib/shorts-ready.client");
-      const prepared = await prepareShortsReadyBlob(video.video_url, {
-        onProgress: (pct: number, label: string) => {
-          const overall = Math.round(pct * 0.55);
-          setProgress(overall);
-          setStatus(label);
-        },
-      });
+      const prepared = preparedUpload || await prepareForUpload();
+      if (!preparedUpload) {
+        setProgress(100);
+        setStatus("Upload-ready copy prepared — preview/download it, then upload.");
+        toast.success("Upload-ready MP4 prepared");
+        return;
+      }
 
       // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
       let preparedStoragePath: string | undefined;
@@ -73,9 +121,34 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
           });
         if (upErr) throw new Error(`Failed to stage prepared copy: ${upErr.message}`);
         preparedStoragePath = target.path;
+        console.info("[shorts-ready] Upload-ready MP4 staged.", {
+          videoId: video.id,
+          preparedStoragePath,
+          width: prepared.uploadProbe.rawWidth,
+          height: prepared.uploadProbe.rawHeight,
+          duration: prepared.uploadProbe.durationSeconds,
+          codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
+          fileSize: prepared.uploadFileSize,
+        });
+      }
+      if (!prepared.reused && !preparedStoragePath) {
+        throw new Error("Prepared Shorts-ready copy was required but no staged upload path was created. Aborting before YouTube upload.");
       }
 
       // Step 3 — kick off the existing YouTube upload path.
+      const uploadSource = prepared.reused ? video.video_url : preparedStoragePath;
+      console.info("[shorts-ready] Upload uses upload-ready MP4.", {
+        videoId: video.id,
+        source: uploadSource,
+        converted: !prepared.reused,
+        width: prepared.uploadProbe.rawWidth,
+        height: prepared.uploadProbe.rawHeight,
+        duration: prepared.uploadProbe.durationSeconds,
+        codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
+        fileSize: prepared.uploadFileSize,
+      });
+      console.info("USING FILE FOR UPLOAD:", uploadSource);
+      console.info(`Converted = ${prepared.reused ? "false" : "true"}`);
       setProgress(70);
       setStatus("Uploading to YouTube…");
       ticker = window.setInterval(() => {
@@ -92,6 +165,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         privacyStatus: privacy,
         preparedStoragePath,
+        preparedExpected: !prepared.reused,
       } });
       setProgress(100);
       setStatus(prepared.reused
@@ -119,8 +193,17 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         <div className="grid gap-5 md:grid-cols-[220px_1fr]">
           <div className="space-y-3">
             <div className="overflow-hidden rounded-xl border border-border/70 bg-background/40">
-              {video.video_url ? <video src={video.video_url} controls className="aspect-[9/16] w-full object-cover" /> : <div className="grid aspect-[9/16] place-items-center text-sm text-muted-foreground">No video file</div>}
+              {preparedPreviewUrl || video.video_url ? <video src={preparedPreviewUrl || video.video_url || undefined} controls className="aspect-[9/16] w-full object-contain" /> : <div className="grid aspect-[9/16] place-items-center text-sm text-muted-foreground">No video file</div>}
             </div>
+            {preparedPreviewUrl && (
+              <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs text-muted-foreground">
+                <div className="font-medium text-foreground">Upload-ready preview</div>
+                {preparedSummary && <div className="mt-1">{preparedSummary}</div>}
+                <a href={preparedPreviewUrl} download={`${video.title || "short"}-upload-ready.mp4`} className="mt-2 inline-flex rounded-md border border-border px-2 py-1 hover:bg-accent">
+                  Download upload-ready MP4
+                </a>
+              </div>
+            )}
             {video.thumbnail_url && <img src={video.thumbnail_url} alt="Thumbnail" className="aspect-video rounded-lg object-cover" />}
             {video.youtube_video_id && <Badge className="w-full justify-center">Already uploaded</Badge>}
           </div>
@@ -133,7 +216,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             <p className="rounded-md border border-border/50 bg-muted/30 p-2 text-xs text-muted-foreground">🎵 YouTube does not allow attaching Creator Music via API. Add music from YouTube Studio after upload.</p>
             {(uploading || status) && <div className="space-y-2"><Progress value={progress} /><p className="text-sm text-muted-foreground">{status}</p></div>}
             <div className="flex flex-wrap gap-2">
-              <Button onClick={run} disabled={uploading || !title.trim() || !video.video_url}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}Upload Now</Button>
+              <Button onClick={run} disabled={uploading || !title.trim() || !video.video_url}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}{preparedUpload ? "Upload Now" : "Prepare upload-ready MP4"}</Button>
               {url && <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">View on YouTube</a>}
             </div>
           </div>
