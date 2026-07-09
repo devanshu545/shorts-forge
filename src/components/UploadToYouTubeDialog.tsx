@@ -11,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, UploadCloud, Youtube } from "lucide-react";
 import { toast } from "sonner";
 import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
-import { prepareShortsReadyBlob } from "@/lib/shorts-ready.client";
 import { supabase } from "@/integrations/supabase/client";
 
 
