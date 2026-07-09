@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
 import { generateShortSEO } from "@/lib/seo.functions";
-const loadPrepareShortsReadyBlob = () => import("@/lib/shorts-ready.client").then((m) => m.prepareShortsReadyBlob);
+const loadPrepareShortsReadyBlob = () => import(/* @vite-ignore */ "@/lib/shorts-ready.client").then((m) => m.prepareShortsReadyBlob);
 import { supabase } from "@/integrations/supabase/client";
 
 
