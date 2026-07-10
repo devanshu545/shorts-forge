@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Loader2, UploadCloud, Youtube } from "lucide-react";
 import { toast } from "sonner";
 import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
@@ -55,6 +56,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [preparedUpload, setPreparedUpload] = useState<PreparedUpload | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [prepareError, setPrepareError] = useState<string | null>(null);
+  const [force916, setForce916] = useState(true);
 
   useEffect(() => {
     return () => {
@@ -65,7 +67,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   // Auto-prepare the Shorts-ready copy as soon as the dialog opens, so the
   // preview shows the exact bytes we will upload — never the landscape original.
   useEffect(() => {
-    if (!open || preparedUpload || preparing || !video.video_url) return;
+    if (!open || !force916 || preparedUpload || preparing || !video.video_url) return;
     let cancelled = false;
     (async () => {
       setPreparing(true);
@@ -130,7 +132,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
       toast.error("No video file attached to this clip");
       return;
     }
-    if (!preparedUpload) {
+    if (force916 && !preparedUpload) {
       toast.error("Upload-ready copy is still being prepared. Please wait.");
       return;
     }
@@ -141,10 +143,9 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
     try {
       const prepared = preparedUpload;
 
-
       // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
       let preparedStoragePath: string | undefined;
-      if (!prepared.reused) {
+      if (force916 && prepared && !prepared.reused) {
         setStatus("Uploading Shorts-ready copy…");
         setProgress(60);
         const target = await createTarget({ data: { videoId: video.id } });
@@ -166,26 +167,24 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
           fileSize: prepared.uploadFileSize,
         });
       }
-      if (!prepared.reused && !preparedStoragePath) {
+      if (force916 && prepared && !prepared.reused && !preparedStoragePath) {
         throw new Error("Prepared Shorts-ready copy was required but no staged upload path was created. Aborting before YouTube upload.");
       }
 
       // Step 3 — kick off the existing YouTube upload path.
-      const uploadSource = prepared.reused ? video.video_url : preparedStoragePath;
+      const uploadSource = preparedStoragePath ?? video.video_url;
+      const converted = Boolean(preparedStoragePath);
       console.info("[shorts-ready] Upload uses upload-ready MP4.", {
         videoId: video.id,
         source: uploadSource,
-        converted: !prepared.reused,
-        width: prepared.uploadProbe.rawWidth,
-        height: prepared.uploadProbe.rawHeight,
-        duration: prepared.uploadProbe.durationSeconds,
-        codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
-        fileSize: prepared.uploadFileSize,
+        converted,
+        force916,
+        reused: prepared?.reused ?? null,
       });
       console.info("USING FILE FOR UPLOAD:", uploadSource);
-      console.info(`Converted = ${prepared.reused ? "false" : "true"}`);
+      console.info(`Converted = ${converted ? "true" : "false"}`);
       setProgress(70);
-      setStatus("Uploading to YouTube…");
+      setStatus(force916 ? "Uploading to YouTube…" : "Uploading original file to YouTube…");
       ticker = window.setInterval(() => {
         setProgress((p) => {
           const next = Math.min(96, p + 3);
@@ -200,12 +199,14 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         privacyStatus: privacy,
         preparedStoragePath,
-        preparedExpected: !prepared.reused,
+        preparedExpected: converted,
       } });
       setProgress(100);
-      setStatus(prepared.reused
-        ? "✅ Uploaded to YouTube (original file was already Shorts-ready)"
-        : "✅ Uploaded to YouTube as a Short");
+      setStatus(converted
+        ? "✅ Uploaded to YouTube as a Short (9:16 converted copy)"
+        : force916
+          ? "✅ Uploaded to YouTube (original was already Shorts-ready)"
+          : "✅ Uploaded original file to YouTube");
       setUrl(result.url);
       toast.success("Uploaded to YouTube");
       onUploaded?.();
@@ -228,20 +229,28 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         <div className="grid gap-5 md:grid-cols-[220px_1fr]">
           <div className="space-y-3">
             <div className="overflow-hidden rounded-xl border border-border/70 bg-background/40">
-              {preparedPreviewUrl ? (
-                <video src={preparedPreviewUrl} controls className="aspect-[9/16] w-full object-contain" />
+              {force916 ? (
+                preparedPreviewUrl ? (
+                  <video src={preparedPreviewUrl} controls className="aspect-[9/16] w-full object-contain" />
+                ) : (
+                  <div className="grid aspect-[9/16] place-items-center gap-2 p-3 text-center text-xs text-muted-foreground">
+                    {prepareError ? (
+                      <span className="text-destructive">{prepareError}</span>
+                    ) : preparing ? (
+                      <>
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <span>Preparing 9:16 Shorts-ready copy…</span>
+                      </>
+                    ) : (
+                      <span>Waiting for source video…</span>
+                    )}
+                  </div>
+                )
+              ) : video.video_url ? (
+                <video src={video.video_url} controls className="aspect-video w-full object-contain" />
               ) : (
-                <div className="grid aspect-[9/16] place-items-center gap-2 p-3 text-center text-xs text-muted-foreground">
-                  {prepareError ? (
-                    <span className="text-destructive">{prepareError}</span>
-                  ) : preparing ? (
-                    <>
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                      <span>Preparing 9:16 Shorts-ready copy…</span>
-                    </>
-                  ) : (
-                    <span>Waiting for source video…</span>
-                  )}
+                <div className="grid aspect-video place-items-center p-3 text-center text-xs text-muted-foreground">
+                  No source video
                 </div>
               )}
             </div>
@@ -258,6 +267,21 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             {video.youtube_video_id && <Badge className="w-full justify-center">Already uploaded</Badge>}
           </div>
           <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-background/40 p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="force-916" className="text-sm font-medium">Convert to 9:16 (Shorts format)</Label>
+                <p className="text-xs text-muted-foreground">
+                  When on, the video is re-encoded to a portrait 1080×1920 copy so YouTube treats it as a Short.
+                  Turn off to upload the original file as-is.
+                </p>
+              </div>
+              <Switch
+                id="force-916"
+                checked={force916}
+                onCheckedChange={(v) => setForce916(Boolean(v))}
+                disabled={uploading || preparing}
+              />
+            </div>
             <div><Label>Title</Label><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /></div>
             <div><Label>Description</Label><Textarea rows={7} value={description} onChange={(e) => setDescription(e.target.value)} /></div>
             <div><Label>Tags</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tag one, tag two" /></div>
@@ -268,11 +292,12 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             <div className="flex flex-wrap gap-2">
               <Button
                 onClick={run}
-                disabled={uploading || preparing || !preparedUpload || !title.trim() || !video.video_url}
+                disabled={uploading || preparing || (force916 && !preparedUpload) || !title.trim() || !video.video_url}
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                {preparing ? "Preparing 9:16…" : preparedUpload ? "Upload Now" : "Waiting for prep…"}
+                {preparing ? "Preparing 9:16…" : force916 ? (preparedUpload ? "Upload Now" : "Waiting for prep…") : "Upload Original"}
               </Button>
+
 
               {url && <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">View on YouTube</a>}
             </div>
