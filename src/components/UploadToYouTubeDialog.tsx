@@ -132,7 +132,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
       toast.error("No video file attached to this clip");
       return;
     }
-    if (!preparedUpload) {
+    if (force916 && !preparedUpload) {
       toast.error("Upload-ready copy is still being prepared. Please wait.");
       return;
     }
