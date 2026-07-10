@@ -56,6 +56,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [preparedUpload, setPreparedUpload] = useState<PreparedUpload | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [prepareError, setPrepareError] = useState<string | null>(null);
+  const [force916, setForce916] = useState(true);
 
   useEffect(() => {
     return () => {
