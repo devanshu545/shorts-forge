@@ -130,18 +130,17 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
       toast.error("No video file attached to this clip");
       return;
     }
+    if (!preparedUpload) {
+      toast.error("Upload-ready copy is still being prepared. Please wait.");
+      return;
+    }
     setUploading(true);
-    setProgress(2);
-    setStatus(preparedUpload ? "Uploading prepared Shorts-ready copy…" : "Preparing Shorts-ready copy…");
+    setProgress(60);
+    setStatus("Uploading prepared Shorts-ready copy…");
     let ticker: number | undefined;
     try {
-      const prepared = preparedUpload || await prepareForUpload();
-      if (!preparedUpload) {
-        setProgress(100);
-        setStatus("Upload-ready copy prepared — preview/download it, then upload.");
-        toast.success("Upload-ready MP4 prepared");
-        return;
-      }
+      const prepared = preparedUpload;
+
 
       // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
       let preparedStoragePath: string | undefined;
