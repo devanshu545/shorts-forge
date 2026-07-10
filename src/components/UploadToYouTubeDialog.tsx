@@ -267,6 +267,21 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             {video.youtube_video_id && <Badge className="w-full justify-center">Already uploaded</Badge>}
           </div>
           <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-background/40 p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="force-916" className="text-sm font-medium">Convert to 9:16 (Shorts format)</Label>
+                <p className="text-xs text-muted-foreground">
+                  When on, the video is re-encoded to a portrait 1080×1920 copy so YouTube treats it as a Short.
+                  Turn off to upload the original file as-is.
+                </p>
+              </div>
+              <Switch
+                id="force-916"
+                checked={force916}
+                onCheckedChange={(v) => setForce916(Boolean(v))}
+                disabled={uploading || preparing}
+              />
+            </div>
             <div><Label>Title</Label><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /></div>
             <div><Label>Description</Label><Textarea rows={7} value={description} onChange={(e) => setDescription(e.target.value)} /></div>
             <div><Label>Tags</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tag one, tag two" /></div>
@@ -277,11 +292,12 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             <div className="flex flex-wrap gap-2">
               <Button
                 onClick={run}
-                disabled={uploading || preparing || !preparedUpload || !title.trim() || !video.video_url}
+                disabled={uploading || preparing || (force916 && !preparedUpload) || !title.trim() || !video.video_url}
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                {preparing ? "Preparing 9:16…" : preparedUpload ? "Upload Now" : "Waiting for prep…"}
+                {preparing ? "Preparing 9:16…" : force916 ? (preparedUpload ? "Upload Now" : "Waiting for prep…") : "Upload Original"}
               </Button>
+
 
               {url && <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">View on YouTube</a>}
             </div>
