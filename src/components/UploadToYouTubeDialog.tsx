@@ -143,10 +143,9 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
     try {
       const prepared = preparedUpload;
 
-
       // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
       let preparedStoragePath: string | undefined;
-      if (!prepared.reused) {
+      if (force916 && prepared && !prepared.reused) {
         setStatus("Uploading Shorts-ready copy…");
         setProgress(60);
         const target = await createTarget({ data: { videoId: video.id } });
@@ -168,26 +167,24 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
           fileSize: prepared.uploadFileSize,
         });
       }
-      if (!prepared.reused && !preparedStoragePath) {
+      if (force916 && prepared && !prepared.reused && !preparedStoragePath) {
         throw new Error("Prepared Shorts-ready copy was required but no staged upload path was created. Aborting before YouTube upload.");
       }
 
       // Step 3 — kick off the existing YouTube upload path.
-      const uploadSource = prepared.reused ? video.video_url : preparedStoragePath;
+      const uploadSource = preparedStoragePath ?? video.video_url;
+      const converted = Boolean(preparedStoragePath);
       console.info("[shorts-ready] Upload uses upload-ready MP4.", {
         videoId: video.id,
         source: uploadSource,
-        converted: !prepared.reused,
-        width: prepared.uploadProbe.rawWidth,
-        height: prepared.uploadProbe.rawHeight,
-        duration: prepared.uploadProbe.durationSeconds,
-        codec: [prepared.uploadProbe.videoCodec, prepared.uploadProbe.audioCodec].filter(Boolean).join("/") || "unknown",
-        fileSize: prepared.uploadFileSize,
+        converted,
+        force916,
+        reused: prepared?.reused ?? null,
       });
       console.info("USING FILE FOR UPLOAD:", uploadSource);
-      console.info(`Converted = ${prepared.reused ? "false" : "true"}`);
+      console.info(`Converted = ${converted ? "true" : "false"}`);
       setProgress(70);
-      setStatus("Uploading to YouTube…");
+      setStatus(force916 ? "Uploading to YouTube…" : "Uploading original file to YouTube…");
       ticker = window.setInterval(() => {
         setProgress((p) => {
           const next = Math.min(96, p + 3);
@@ -202,12 +199,14 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         privacyStatus: privacy,
         preparedStoragePath,
-        preparedExpected: !prepared.reused,
+        preparedExpected: converted,
       } });
       setProgress(100);
-      setStatus(prepared.reused
-        ? "✅ Uploaded to YouTube (original file was already Shorts-ready)"
-        : "✅ Uploaded to YouTube as a Short");
+      setStatus(converted
+        ? "✅ Uploaded to YouTube as a Short (9:16 converted copy)"
+        : force916
+          ? "✅ Uploaded to YouTube (original was already Shorts-ready)"
+          : "✅ Uploaded original file to YouTube");
       setUrl(result.url);
       toast.success("Uploaded to YouTube");
       onUploaded?.();
