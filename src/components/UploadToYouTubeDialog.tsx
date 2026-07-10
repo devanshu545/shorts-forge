@@ -229,20 +229,28 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         <div className="grid gap-5 md:grid-cols-[220px_1fr]">
           <div className="space-y-3">
             <div className="overflow-hidden rounded-xl border border-border/70 bg-background/40">
-              {preparedPreviewUrl ? (
-                <video src={preparedPreviewUrl} controls className="aspect-[9/16] w-full object-contain" />
+              {force916 ? (
+                preparedPreviewUrl ? (
+                  <video src={preparedPreviewUrl} controls className="aspect-[9/16] w-full object-contain" />
+                ) : (
+                  <div className="grid aspect-[9/16] place-items-center gap-2 p-3 text-center text-xs text-muted-foreground">
+                    {prepareError ? (
+                      <span className="text-destructive">{prepareError}</span>
+                    ) : preparing ? (
+                      <>
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <span>Preparing 9:16 Shorts-ready copy…</span>
+                      </>
+                    ) : (
+                      <span>Waiting for source video…</span>
+                    )}
+                  </div>
+                )
+              ) : video.video_url ? (
+                <video src={video.video_url} controls className="aspect-video w-full object-contain" />
               ) : (
-                <div className="grid aspect-[9/16] place-items-center gap-2 p-3 text-center text-xs text-muted-foreground">
-                  {prepareError ? (
-                    <span className="text-destructive">{prepareError}</span>
-                  ) : preparing ? (
-                    <>
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                      <span>Preparing 9:16 Shorts-ready copy…</span>
-                    </>
-                  ) : (
-                    <span>Waiting for source video…</span>
-                  )}
+                <div className="grid aspect-video place-items-center p-3 text-center text-xs text-muted-foreground">
+                  No source video
                 </div>
               )}
             </div>
