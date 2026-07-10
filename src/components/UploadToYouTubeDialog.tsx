@@ -53,12 +53,48 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [preparedPreviewUrl, setPreparedPreviewUrl] = useState<string | null>(null);
   const [preparedSummary, setPreparedSummary] = useState<string | null>(null);
   const [preparedUpload, setPreparedUpload] = useState<PreparedUpload | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
       if (preparedPreviewUrl) URL.revokeObjectURL(preparedPreviewUrl);
     };
   }, [preparedPreviewUrl]);
+
+  // Auto-prepare the Shorts-ready copy as soon as the dialog opens, so the
+  // preview shows the exact bytes we will upload — never the landscape original.
+  useEffect(() => {
+    if (!open || preparedUpload || preparing || !video.video_url) return;
+    let cancelled = false;
+    (async () => {
+      setPreparing(true);
+      setPrepareError(null);
+      setProgress(2);
+      setStatus("Preparing Shorts-ready copy…");
+      try {
+        await prepareForUpload();
+        if (!cancelled) {
+          setProgress(100);
+          setStatus("Upload-ready copy prepared — preview it, then upload.");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Failed to prepare Shorts-ready copy";
+          setPrepareError(msg);
+          setStatus(msg);
+          toast.error("Shorts prep failed", { description: msg });
+        }
+      } finally {
+        if (!cancelled) setPreparing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, video.video_url]);
+
 
   const prepareForUpload = async () => {
     if (!video.video_url) {
@@ -94,18 +130,17 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
       toast.error("No video file attached to this clip");
       return;
     }
+    if (!preparedUpload) {
+      toast.error("Upload-ready copy is still being prepared. Please wait.");
+      return;
+    }
     setUploading(true);
-    setProgress(2);
-    setStatus(preparedUpload ? "Uploading prepared Shorts-ready copy…" : "Preparing Shorts-ready copy…");
+    setProgress(60);
+    setStatus("Uploading prepared Shorts-ready copy…");
     let ticker: number | undefined;
     try {
-      const prepared = preparedUpload || await prepareForUpload();
-      if (!preparedUpload) {
-        setProgress(100);
-        setStatus("Upload-ready copy prepared — preview/download it, then upload.");
-        toast.success("Upload-ready MP4 prepared");
-        return;
-      }
+      const prepared = preparedUpload;
+
 
       // Step 2 — if we re-encoded, PUT the converted blob to a temp signed URL.
       let preparedStoragePath: string | undefined;
@@ -193,11 +228,26 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
         <div className="grid gap-5 md:grid-cols-[220px_1fr]">
           <div className="space-y-3">
             <div className="overflow-hidden rounded-xl border border-border/70 bg-background/40">
-              {preparedPreviewUrl || video.video_url ? <video src={preparedPreviewUrl || video.video_url || undefined} controls className="aspect-[9/16] w-full object-contain" /> : <div className="grid aspect-[9/16] place-items-center text-sm text-muted-foreground">No video file</div>}
+              {preparedPreviewUrl ? (
+                <video src={preparedPreviewUrl} controls className="aspect-[9/16] w-full object-contain" />
+              ) : (
+                <div className="grid aspect-[9/16] place-items-center gap-2 p-3 text-center text-xs text-muted-foreground">
+                  {prepareError ? (
+                    <span className="text-destructive">{prepareError}</span>
+                  ) : preparing ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <span>Preparing 9:16 Shorts-ready copy…</span>
+                    </>
+                  ) : (
+                    <span>Waiting for source video…</span>
+                  )}
+                </div>
+              )}
             </div>
             {preparedPreviewUrl && (
               <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs text-muted-foreground">
-                <div className="font-medium text-foreground">Upload-ready preview</div>
+                <div className="font-medium text-foreground">Upload-ready preview (exact bytes uploaded)</div>
                 {preparedSummary && <div className="mt-1">{preparedSummary}</div>}
                 <a href={preparedPreviewUrl} download={`${video.title || "short"}-upload-ready.mp4`} className="mt-2 inline-flex rounded-md border border-border px-2 py-1 hover:bg-accent">
                   Download upload-ready MP4
@@ -214,9 +264,16 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
             {video.hashtags?.length ? <div><Label>Hashtags</Label><p className="mt-1 rounded-md border border-border/60 bg-background/40 p-2 text-sm">{video.hashtags.join(" ")}</p></div> : null}
             <div><Label>Privacy</Label><Select value={privacy} onValueChange={(v: "public" | "unlisted" | "private") => setPrivacy(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="private">Private</SelectItem><SelectItem value="unlisted">Unlisted</SelectItem><SelectItem value="public">Public</SelectItem></SelectContent></Select></div>
             <p className="rounded-md border border-border/50 bg-muted/30 p-2 text-xs text-muted-foreground">🎵 YouTube does not allow attaching Creator Music via API. Add music from YouTube Studio after upload.</p>
-            {(uploading || status) && <div className="space-y-2"><Progress value={progress} /><p className="text-sm text-muted-foreground">{status}</p></div>}
+            {(uploading || preparing || status) && <div className="space-y-2"><Progress value={progress} /><p className="text-sm text-muted-foreground">{status}</p></div>}
             <div className="flex flex-wrap gap-2">
-              <Button onClick={run} disabled={uploading || !title.trim() || !video.video_url}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}{preparedUpload ? "Upload Now" : "Prepare upload-ready MP4"}</Button>
+              <Button
+                onClick={run}
+                disabled={uploading || preparing || !preparedUpload || !title.trim() || !video.video_url}
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                {preparing ? "Preparing 9:16…" : preparedUpload ? "Upload Now" : "Waiting for prep…"}
+              </Button>
+
               {url && <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">View on YouTube</a>}
             </div>
           </div>
