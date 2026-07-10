@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Loader2, UploadCloud, Youtube } from "lucide-react";
 import { toast } from "sonner";
 import { uploadVideoToYouTube, createShortsReadyUploadTarget } from "@/lib/media.functions";
