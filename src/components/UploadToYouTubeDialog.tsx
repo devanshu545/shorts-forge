@@ -67,7 +67,7 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   // Auto-prepare the Shorts-ready copy as soon as the dialog opens, so the
   // preview shows the exact bytes we will upload — never the landscape original.
   useEffect(() => {
-    if (!open || preparedUpload || preparing || !video.video_url) return;
+    if (!open || !force916 || preparedUpload || preparing || !video.video_url) return;
     let cancelled = false;
     (async () => {
       setPreparing(true);
