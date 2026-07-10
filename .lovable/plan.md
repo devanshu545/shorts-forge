@@ -1,76 +1,48 @@
 ## Goal
-Prove exactly whether the existing post-generation Shorts conversion layer runs, creates a portrait upload-ready file, previews that file, and sends that file to YouTube — without changing the working Long Video → Shorts generation pipeline.
 
-## Non-negotiable boundaries
-I will not modify:
-- Upload/generation pipeline
-- AI clip detection
-- Scene detection
-- Rendering
-- FFmpeg generation for clip creation
-- Native worker
-- Queue
-- Database schema/storage structure
-- Library/download behavior
-- Existing auth/API behavior outside the upload-prep path
+Make it visually and log-provably true that every YouTube upload goes through the isolated Shorts-preparation layer, and that the preview shows the exact bytes that will be uploaded. No changes to generation, AI, workers, queue, DB, storage, library, downloads, auth, or existing APIs.
 
-Only the isolated post-generation upload-preparation path will be touched.
+## What already exists (do not change)
 
-## Plan
-1. Add temporary, explicit debug logging to the existing client upload-prep function.
-   - Log `Original generated MP4 details logged.`
-   - Log original source URL, width, height, duration, codec, file size, rotation, and validation reasons.
-   - Log `Validation started.`
-   - Log `Conversion started.` only when ffmpeg.wasm actually runs.
-   - Log `Conversion completed.` when the converted Blob is produced.
-   - Log converted width, height, duration, codec, file size, rotation, and validation result.
-   - Log `Upload-ready MP4 created.` and `Upload-ready MP4 validated.`
+- `src/lib/shorts-ready.client.ts` — client-side ffmpeg.wasm cover-style 1080×1920 re-encode with pre/post MP4 probe, `+faststart`, `rotate=0`, AAC 128k, H.264 [high@4.1](mailto:high@4.1).
+- Server guardrail in `src/lib/youtube-upload.server.ts` that refuses non-portrait bytes and aborts when a prepared copy was expected.
+- `createShortsReadyUploadTarget` staging path so the converted Blob is uploaded via a signed URL and passed to YouTube by `preparedStoragePath`.
 
-2. Fix the main upload dialog preview to show the exact upload-ready copy when it exists.
-   - Keep the original generated MP4 untouched.
-   - Before upload, create a local object URL for the prepared Blob.
-   - Switch the dialog preview/download link to that prepared object URL once available.
-   - Clearly expose/download the upload-ready copy for manual verification.
-   - Keep library thumbnails/detail previews unchanged except inside this upload dialog.
+The layer is wired. The remaining risk is that the dialog can enter upload without the prepared copy actually being the source, and the user has no reliable visible proof.
 
-3. Add a strict client-side upload handoff check.
-   - If conversion was needed, require `preparedStoragePath` before calling the upload server function.
-   - Abort if the upload would fall back to the original landscape MP4 after conversion was required.
-   - Log `USING FILE FOR UPLOAD: <source>` and `Converted = true/false` before upload is requested.
+## Scope of this change (isolated post-generation only)
 
-4. Add strict server-side upload-source diagnostics and guardrails.
-   - Log whether the server downloads from `preparedStoragePath`, original storage path, or original URL.
-   - Log `USING FILE FOR UPLOAD: <source>` and `Converted = true/false` immediately before upload.
-   - Validate selected bytes before YouTube upload.
-   - Abort if selected bytes are not portrait 9:16 or if a prepared copy was expected but missing.
+1. `UploadToYouTubeDialog.tsx` — tighten the two-step flow so it is impossible to upload the original landscape file:
+  - Auto-run `prepareShortsReadyBlob` as soon as the dialog opens (once), storing the prepared Blob + object URL in state.
+  - The `<video>` element in the dialog binds to the prepared object URL only. While preparation is in progress, show a spinner instead of the original landscape file — never show `video.video_url` as a fallback preview.
+  - "Upload Now" is disabled until `preparedUpload` exists and its `uploadProbe` passes `isPhysicalPortraitShort` + duration ≤ 60.5s.
+  - Keep the existing "Download upload-ready MP4" link so the user can byte-verify externally.
+2. `OneClickPublishButton.tsx` and `BulkPublishPanel.tsx` — same handoff invariant already in place; add one extra assertion right before calling `uploadVideoToYouTube`: if `prepared.reused === false` and `preparedStoragePath` is falsy, throw before hitting the server. (Already present; verify and keep.)
+3. Logging cleanup (already emitted, keep as-is):
+  - `Original generated MP4 details logged.`
+  - `Validation started.` / `Conversion started.` / `Conversion completed.`
+  - `Upload-ready MP4 created.` / `Upload-ready MP4 validated.`
+  - `USING FILE FOR UPLOAD: <path|url>` and `Converted = true|false`.
+4. No server changes. No storage/schema changes. No generation-pipeline changes.
 
-5. Apply the same investigation logging and guardrails to bulk publish, but only in the upload-prep section.
-   - Add per-clip logs so one failing item shows exactly which stage was skipped.
-   - Do not change SEO generation, selection, or bulk UI behavior beyond status/debug visibility.
+## Verification
 
-6. Verify with the uploaded reference video metadata.
-   - Use the reference file as the expected visual/technical target: true portrait 9:16 after Shorts prep.
-   - Confirm converted output is physically portrait dimensions, not a landscape file relying on rotation metadata.
+- Build succeeds (Vite/TSS typecheck).
+- Open the upload dialog on a known-landscape generated clip; confirm:
+  - Preview player shows portrait 1080×1920 blurred-bg framing (not the landscape source).
+  - Downloaded "upload-ready MP4" opens as physical portrait in any player.
+  - Console shows the full log sequence ending in `USING FILE FOR UPLOAD: <staged path>` and `Converted = true`.
+  - "Upload Now" is disabled until preparation finishes.
+- Repeat on a clip that is already 1080×1920 portrait: log shows `reused: true`, no ffmpeg run, and preview equals original.
 
-7. Validate the result.
-   - Run a build/type validation after edits.
-   - Use browser verification where possible to confirm the upload dialog can preview/download the upload-ready copy before upload.
-   - Report exactly what the logs prove: whether conversion skipped, failed, produced landscape, produced portrait but was not used, or uploaded correctly.
+## Rollback
 
-## Expected outcome
-After implementation, one publish attempt will produce unambiguous evidence for every stage:
+If anything regresses, revert `UploadToYouTubeDialog.tsx` to the current two-button flow. No other file is touched, so removing this layer is a single-file revert.
 
-```text
-Original generated MP4 details logged.
-Validation started.
-Conversion started.
-Conversion completed.
-Upload-ready MP4 created.
-Upload-ready MP4 validated.
-USING FILE FOR UPLOAD: <prepared path or original URL>
-Converted = true/false
-Upload uses upload-ready MP4.
-Upload completes or fails with the exact failing stage.
-```
+## Files touched
 
-If the converted upload-ready file exists, the upload dialog will let you preview/download that exact file before upload, so we can immediately tell whether the bug is conversion output or upload flow.
+- `src/components/UploadToYouTubeDialog.tsx` (preview binding + auto-prepare + gated Upload button)
+- (verify only, no edit expected) `src/components/OneClickPublishButton.tsx`, `src/components/BulkPublishPanel.tsx`  
+  
+`MAKE SURE TO THE GRNARATED SHORTS IN LONG TO SHORTS SECTION IS IN 9:16 FORMAT AND READY TO UPLOAD IN YOUTUBE SHORTS SECTION NOT IN LONG VIDEO SECTION DO WHATEVER IT TAKES BUT MAKE SURE THERE SHOULD NOT BE PROBLEM IN WORKING PIPELINE`
+- &nbsp;

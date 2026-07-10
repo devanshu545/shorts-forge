@@ -53,12 +53,48 @@ export function UploadToYouTubeDialog({ video, children, onUploaded }: { video: 
   const [preparedPreviewUrl, setPreparedPreviewUrl] = useState<string | null>(null);
   const [preparedSummary, setPreparedSummary] = useState<string | null>(null);
   const [preparedUpload, setPreparedUpload] = useState<PreparedUpload | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
       if (preparedPreviewUrl) URL.revokeObjectURL(preparedPreviewUrl);
     };
   }, [preparedPreviewUrl]);
+
+  // Auto-prepare the Shorts-ready copy as soon as the dialog opens, so the
+  // preview shows the exact bytes we will upload — never the landscape original.
+  useEffect(() => {
+    if (!open || preparedUpload || preparing || !video.video_url) return;
+    let cancelled = false;
+    (async () => {
+      setPreparing(true);
+      setPrepareError(null);
+      setProgress(2);
+      setStatus("Preparing Shorts-ready copy…");
+      try {
+        await prepareForUpload();
+        if (!cancelled) {
+          setProgress(100);
+          setStatus("Upload-ready copy prepared — preview it, then upload.");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Failed to prepare Shorts-ready copy";
+          setPrepareError(msg);
+          setStatus(msg);
+          toast.error("Shorts prep failed", { description: msg });
+        }
+      } finally {
+        if (!cancelled) setPreparing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, video.video_url]);
+
 
   const prepareForUpload = async () => {
     if (!video.video_url) {
